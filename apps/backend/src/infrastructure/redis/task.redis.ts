@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 /**
- * Redis：`task:<uuid>` → 状态字符串（如 pending），与验收示例一致用小写。
+ * 全局任务状态缓存：键 `task:<id>`，值为小写状态字符串。
  */
 @Injectable()
 export class TaskRedis implements OnModuleDestroy {

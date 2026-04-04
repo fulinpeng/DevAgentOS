@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Task } from '@prisma/client';
 import { splitTask } from '../domain/task-split';
-import { TaskRedis } from '../infrastructure/task.redis';
+import { TaskRedis } from '../../../infrastructure/redis/task.redis';
 import { TaskRepository } from '../infrastructure/task.repository';
 
 export type CreateTaskResult = {
