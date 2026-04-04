@@ -1,0 +1,30 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+}
+
+model Task {
+  id         String     @id @default(uuid())
+  parentId   String?
+  parent     Task?      @relation("TaskTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children   Task[]     @relation("TaskTree")
+  name       String
+  status     TaskStatus @default(PENDING)
+  role       String?
+  /// 同级排序，对应库列名 order（Prisma 字段名用 sortOrder 避免与 orderBy 语义混淆）
+  sortOrder  Int        @default(0) @map("order")
+  parameters Json?
+  result     Json?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+}

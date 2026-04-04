@@ -13,3 +13,7 @@ coverage
 # 调试与本地
 .pnpm-debug.log
 *.local
+
+# 本地 SQLite
+**/prisma/dev.db
+**/prisma/dev.db-journal
