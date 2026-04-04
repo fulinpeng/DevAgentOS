@@ -1,0 +1,15 @@
+node_modules
+dist
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# TypeScript / 构建
+*.tsbuildinfo
+coverage
+
+# 调试与本地
+.pnpm-debug.log
+*.local
