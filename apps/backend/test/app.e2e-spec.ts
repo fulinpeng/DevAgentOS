@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { WorkflowLlmService } from './../src/modules/workflow/infrastructure/llm.service';
 import type { TaskExecutionLogEntry } from './../src/infrastructure/redis/task.redis';
 import { TaskRedis } from './../src/infrastructure/redis/task.redis';
 import { PrismaService } from './../src/prisma/prisma.service';
@@ -59,6 +60,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
     })
       .overrideProvider(TaskRedis)
       .useValue(mock)
+      .overrideProvider(WorkflowLlmService)
+      .useValue({
+        tryCallSplitTaskJson: async () => null as string | null,
+      })
       .compile();
 
     app = moduleFixture.createNestApplication();
