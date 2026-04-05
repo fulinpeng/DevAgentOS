@@ -8,8 +8,20 @@ import {
 const DEFAULT_COMPAT_URL =
   'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
 
+/** DashScope 兼容 OpenAI Chat Completions；超时避免长时间挂起 */
+const LLM_REQUEST_TIMEOUT_MS = 120_000;
+
+function getDashScopeApiKey(config: ConfigService): string {
+  return (
+    config.get<string>('DASHSCOPE_API_KEY') ??
+    config.get<string>('QWEN_API_KEY') ??
+    ''
+  ).trim();
+}
+
 /**
- * Workflow 专用 LLM 网关：只负责文本补全，不执行业务。
+ * Workflow 专用 LLM 网关：DashScope OpenAI 兼容接口，只负责文本补全，不执行业务。
+ * 失败路径由 {@link tryCallSplitTaskJson} 吞掉并走领域规则 fallback。
  */
 @Injectable()
 export class WorkflowLlmService {
@@ -22,11 +34,7 @@ export class WorkflowLlmService {
    * 默认用于拆分任务时请使用 {@link callSplitTaskJson}。
    */
   async callLLM(systemPrompt: string, userPrompt: string): Promise<string> {
-    const apiKey = (
-      this.config.get<string>('DASHSCOPE_API_KEY') ??
-      this.config.get<string>('QWEN_API_KEY') ??
-      ''
-    ).trim();
+    const apiKey = getDashScopeApiKey(this.config);
     if (!apiKey) {
       throw new Error('DASHSCOPE_API_KEY or QWEN_API_KEY is not set');
     }
@@ -35,21 +43,39 @@ export class WorkflowLlmService {
       this.config.get<string>('LLM_BASE_URL') ?? DEFAULT_COMPAT_URL;
     const model = this.config.get<string>('LLM_MODEL', 'qwen-turbo');
 
-    const res = await fetch(baseUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.2,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      LLM_REQUEST_TIMEOUT_MS,
+    );
+
+    let res: Response;
+    try {
+      res = await fetch(baseUrl, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.2,
+        }),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('abort') || msg.includes('Abort')) {
+        throw new Error(`LLM request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!res.ok) {
       const text = await res.text();
@@ -77,6 +103,13 @@ export class WorkflowLlmService {
     name: string,
     features: string[],
   ): Promise<string | null> {
+    const apiKey = getDashScopeApiKey(this.config);
+    if (!apiKey) {
+      this.logger.debug(
+        'LLM split skipped (no DASHSCOPE_API_KEY / QWEN_API_KEY), using rule fallback',
+      );
+      return null;
+    }
     try {
       return await this.callSplitTaskJson(name, features);
     } catch (e) {

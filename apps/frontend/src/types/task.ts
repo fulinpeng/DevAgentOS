@@ -36,3 +36,9 @@ export type LogEntry = {
   time: string
   meta?: Record<string, unknown>
 }
+
+/** POST /task/create 响应 */
+export type CreateTaskResponse = {
+  parentTask: { id: string; name: string; status: string }
+  subTasks: Array<{ id: string; name: string; status: string }>
+}

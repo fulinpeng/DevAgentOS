@@ -1,4 +1,5 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
+import { NewTask } from './components/NewTask'
 import { PendingApproval } from './components/PendingApproval'
 import { TaskDetail } from './components/TaskDetail'
 import { TaskList } from './components/TaskList'
@@ -12,12 +13,14 @@ export default function App() {
         <p className="muted">任务列表 · 待审批 · 任务树 · Redis 执行日志</p>
         <nav className="header-nav">
           <Link to="/">任务列表</Link>
+          <Link to="/new-task">新建任务</Link>
           <Link to="/pending-approval">待审批</Link>
         </nav>
       </header>
       <main className="console-main">
         <Routes>
           <Route path="/" element={<TaskList />} />
+          <Route path="/new-task" element={<NewTask />} />
           <Route path="/pending-approval" element={<PendingApproval />} />
           <Route path="/task/:id" element={<TaskDetail />} />
           <Route path="*" element={<Navigate to="/" replace />} />
