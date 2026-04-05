@@ -1,0 +1,2 @@
+-- SQLite 中 Task.status 列为 TEXT；新增 WAITING_APPROVAL、FAILED 由 Prisma 应用层校验。
+-- 无需 ALTER TABLE；此迁移用于迁移历史与团队对齐 schema 版本。

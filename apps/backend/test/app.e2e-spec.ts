@@ -186,6 +186,91 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .expect(409);
   });
 
+  it('子任务标记为 LLM 来源时：执行先入 WAITING_APPROVAL，审批后完成', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post('/task/create')
+      .send({
+        name: 'build a web page',
+        parameters: { features: ['login', 'dashboard'] },
+      })
+      .expect(201);
+
+    const subId = createRes.body.subTasks[0].id as string;
+    const prisma = app.get(PrismaService);
+    await prisma.task.update({
+      where: { id: subId },
+      data: {
+        parameters: {
+          source: 'llm',
+          feature: 'login',
+          parentName: 'build a web page',
+        },
+      },
+    });
+
+    const execRes = await request(app.getHttpServer())
+      .post(`/role/execute/${subId}`)
+      .expect(200);
+
+    expect(execRes.body.pausedForApproval).toBe(true);
+    expect(execRes.body.task.status).toBe('WAITING_APPROVAL');
+
+    const pending = await request(app.getHttpServer())
+      .get('/task/pending-approval')
+      .expect(200);
+
+    expect(
+      (pending.body as { id: string }[]).some((r) => r.id === subId),
+    ).toBe(true);
+
+    const stepsWait = getLogsForTask(subId).map((e) => e.step);
+    expect(stepsWait).toContain('approval_requested');
+
+    const appr = await request(app.getHttpServer())
+      .post(`/task/approve/${subId}`)
+      .expect(200);
+
+    expect(appr.body.task.status).toBe('COMPLETED');
+    expect(redisStore.get(`task:${subId}`)).toBe('completed');
+
+    const stepsDone = getLogsForTask(subId).map((e) => e.step);
+    expect(stepsDone).toContain('approved');
+    expect(stepsDone).toContain('completed');
+  });
+
+  it('POST /task/reject/:id：WAITING_APPROVAL → FAILED', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post('/task/create')
+      .send({
+        name: 'build a web page',
+        parameters: { features: ['login', 'dashboard'] },
+      })
+      .expect(201);
+
+    const subId = createRes.body.subTasks[0].id as string;
+    const prisma = app.get(PrismaService);
+    await prisma.task.update({
+      where: { id: subId },
+      data: {
+        parameters: { source: 'llm', feature: 'login' },
+      },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/role/execute/${subId}`)
+      .expect(200);
+
+    const rej = await request(app.getHttpServer())
+      .post(`/task/reject/${subId}`)
+      .expect(200);
+
+    expect(rej.body.task.status).toBe('FAILED');
+    expect(redisStore.get(`task:${subId}`)).toBe('failed');
+
+    const steps = getLogsForTask(subId).map((e) => e.step);
+    expect(steps).toContain('rejected');
+  });
+
   it('POST /coordinator/run/:parentId 顺序执行子任务并完成主任务', async () => {
     const createRes = await request(app.getHttpServer())
       .post('/task/create')

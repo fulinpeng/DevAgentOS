@@ -9,8 +9,10 @@ datasource db {
 
 enum TaskStatus {
   PENDING
+  WAITING_APPROVAL
   RUNNING
   COMPLETED
+  FAILED
 }
 
 model Task {

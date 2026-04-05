@@ -4,14 +4,29 @@
 
 export type ChildTaskSnapshot = {
   id: string;
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED';
+  status:
+    | 'PENDING'
+    | 'WAITING_APPROVAL'
+    | 'RUNNING'
+    | 'COMPLETED'
+    | 'FAILED';
   sortOrder: number;
 };
 
-/** 按 sortOrder，返回第一个 status !== COMPLETED 的子任务 */
+/**
+ * 按 sortOrder，返回第一个未完成子任务。
+ * 若队首为 FAILED，整链中止（返回 null，不再执行后续子任务）。
+ */
 export function getNextTask(
   children: ChildTaskSnapshot[],
 ): ChildTaskSnapshot | null {
   const sorted = [...children].sort((a, b) => a.sortOrder - b.sortOrder);
-  return sorted.find((c) => c.status !== 'COMPLETED') ?? null;
+  const next = sorted.find((c) => c.status !== 'COMPLETED') ?? null;
+  if (!next) {
+    return null;
+  }
+  if (next.status === 'FAILED') {
+    return null;
+  }
+  return next;
 }

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { apiGet } from '../api/client'
+import { apiGet, apiPost } from '../api/client'
 import type { TaskDetailResponse, TaskNode } from '../types/task'
 import { TaskLogs } from './TaskLogs'
 
@@ -15,6 +15,7 @@ function TaskRow({ t, depth }: { t: TaskNode; depth: number }) {
         <code>{t.status}</code>
       </td>
       <td>{t.role ?? '—'}</td>
+      <td>{t.parameterSourceLabel ?? '—'}</td>
       <td>
         <Link to={`/task/${t.id}`}>查看</Link>
       </td>
@@ -26,10 +27,18 @@ export function TaskDetail() {
   const { id } = useParams<{ id: string }>()
   const [data, setData] = useState<TaskDetailResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [actionErr, setActionErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const reload = useCallback(() => {
+    if (!id) return Promise.resolve()
+    return apiGet<TaskDetailResponse>(`/task/${id}`).then(setData)
+  }, [id])
 
   useEffect(() => {
     if (!id) return
     let cancelled = false
+    setErr(null)
     apiGet<TaskDetailResponse>(`/task/${id}`)
       .then((d) => {
         if (!cancelled) setData(d)
@@ -41,6 +50,34 @@ export function TaskDetail() {
       cancelled = true
     }
   }, [id])
+
+  async function approve() {
+    if (!id) return
+    setBusy(true)
+    setActionErr(null)
+    try {
+      await apiPost(`/task/approve/${id}`)
+      await reload()
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function reject() {
+    if (!id) return
+    setBusy(true)
+    setActionErr(null)
+    try {
+      await apiPost(`/task/reject/${id}`)
+      await reload()
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   if (!id) {
     return <p>无效任务 ID</p>
@@ -65,12 +102,45 @@ export function TaskDetail() {
         <p className="muted">
           当前节点：<strong>{task.name}</strong>（{task.id}）
         </p>
+        <p className="muted">
+          来源：<strong>{task.parameterSourceLabel ?? '—'}</strong>
+          {task.approvalReason ? (
+            <>
+              {' '}
+              · {task.approvalReason}
+            </>
+          ) : null}
+        </p>
+        {task.status === 'WAITING_APPROVAL' ? (
+          <div className="approval-actions">
+            {actionErr ? <p className="error">{actionErr}</p> : null}
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => void approve()}
+              >
+                批准执行
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() => void reject()}
+              >
+                拒绝
+              </button>
+            </div>
+          </div>
+        ) : null}
         <table className="data-table">
           <thead>
             <tr>
               <th>名称</th>
               <th>状态</th>
               <th>角色</th>
+              <th>来源</th>
               <th />
             </tr>
           </thead>

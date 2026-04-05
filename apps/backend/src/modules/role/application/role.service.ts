@@ -6,7 +6,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Task, TaskStatus } from '@prisma/client';
-import { routeRoleExecution } from '../domain/execution-policy';
+import { shouldRequireApproval } from '../domain/approval-policy';
+import {
+  routeRoleExecution,
+  type TaskStatusSnapshot,
+} from '../domain/execution-policy';
 import {
   type IWorkerExecutor,
   WORKER_EXECUTOR,
@@ -18,10 +22,17 @@ export type RoleExecuteResult = {
   task: Task;
   workerResult: { success: boolean; result: Record<string, unknown> };
   idempotent?: boolean;
+  /** 已进入待审批，未调用 Worker */
+  pausedForApproval?: boolean;
 };
 
 const REDIS_RUNNING = 'running';
 const REDIS_COMPLETED = 'completed';
+const REDIS_WAITING_APPROVAL = 'waiting_approval';
+
+function toStatusSnapshot(status: TaskStatus): TaskStatusSnapshot {
+  return status as TaskStatusSnapshot;
+}
 
 function jsonToResultRecord(value: unknown): Record<string, unknown> {
   if (
@@ -48,7 +59,25 @@ export class RoleService {
       throw new NotFoundException(`Task ${taskId} not found`);
     }
 
-    const route = routeRoleExecution({ status: task.status });
+    const route = routeRoleExecution({ status: toStatusSnapshot(task.status) });
+    if (route === 'blocked_approval') {
+      return {
+        task,
+        workerResult: { success: false, result: {} },
+        idempotent: true,
+        pausedForApproval: true,
+      };
+    }
+    if (route === 'blocked_failed') {
+      return {
+        task,
+        workerResult: {
+          success: false,
+          result: jsonToResultRecord(task.result),
+        },
+        idempotent: true,
+      };
+    }
     if (route === 'return_completed') {
       return {
         task,
@@ -75,7 +104,25 @@ export class RoleService {
       if (!latest) {
         throw new NotFoundException(`Task ${taskId} not found`);
       }
-      const r2 = routeRoleExecution({ status: latest.status });
+      const r2 = routeRoleExecution({ status: toStatusSnapshot(latest.status) });
+      if (r2 === 'blocked_approval') {
+        return {
+          task: latest,
+          workerResult: { success: false, result: {} },
+          idempotent: true,
+          pausedForApproval: true,
+        };
+      }
+      if (r2 === 'blocked_failed') {
+        return {
+          task: latest,
+          workerResult: {
+            success: false,
+            result: jsonToResultRecord(latest.result),
+          },
+          idempotent: true,
+        };
+      }
       if (r2 === 'return_completed') {
         return {
           task: latest,
@@ -90,6 +137,19 @@ export class RoleService {
         throw new ConflictException(
           `Task ${taskId} is already running; retry later`,
         );
+      }
+
+      if (shouldRequireApproval(latest)) {
+        const waiting = await this.taskRepository.updateStatus(taskId, {
+          status: TaskStatus.WAITING_APPROVAL,
+        });
+        await this.taskRedis.updateStatus(taskId, REDIS_WAITING_APPROVAL);
+        await this.taskRedis.appendLog(taskId, 'approval_requested');
+        return {
+          task: waiting,
+          workerResult: { success: false, result: {} },
+          pausedForApproval: true,
+        };
       }
 
       await this.taskRedis.appendLog(taskId, 'role_execution_start');

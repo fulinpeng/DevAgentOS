@@ -37,7 +37,7 @@ export class CoordinatorService {
     if (children.length === 0) {
       if (parent.status !== TaskStatus.COMPLETED) {
         const r = await this.roleService.executeTask(parent.id);
-        if (!r.idempotent) {
+        if (!r.pausedForApproval && !r.idempotent) {
           executedTaskIds.push(parent.id);
         }
       }
@@ -61,8 +61,13 @@ export class CoordinatorService {
       if (!next) {
         break;
       }
-      await this.roleService.executeTask(next.id);
-      executedTaskIds.push(next.id);
+      const r = await this.roleService.executeTask(next.id);
+      if (r.pausedForApproval) {
+        break;
+      }
+      if (!r.idempotent) {
+        executedTaskIds.push(next.id);
+      }
     }
 
     const finalBundle = await this.repository.findParentWithChildren(parentId);

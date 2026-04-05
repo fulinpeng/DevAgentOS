@@ -17,6 +17,59 @@
   font-size: 1.35rem;
 }
 
+.header-nav {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 1rem;
+  font-size: 0.9rem;
+}
+
+.header-nav a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.header-nav a:hover {
+  text-decoration: underline;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.btn {
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  font-size: 0.85rem;
+  cursor: pointer;
+  background: #fff;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.btn-danger {
+  border-color: #b91c1c;
+  background: #fff;
+  color: #b91c1c;
+}
+
+.approval-actions {
+  margin: 0.75rem 0 1rem;
+}
+
 .muted {
   color: #666;
   font-size: 0.9rem;

@@ -30,6 +30,9 @@ export function TaskList() {
 
   return (
     <div className="panel">
+      <nav className="breadcrumb" style={{ marginBottom: '0.75rem' }}>
+        <Link to="/pending-approval">待审批队列 →</Link>
+      </nav>
       <h2>任务列表（主任务）</h2>
       <table className="data-table">
         <thead>

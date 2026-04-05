@@ -17,6 +17,9 @@ export type TaskNode = {
   result: unknown
   createdAt: string
   updatedAt: string
+  /** 后端详情/待审批列表附带 */
+  parameterSourceLabel?: string
+  approvalReason?: string | null
 }
 
 export type TaskDetailResponse = {

@@ -14,6 +14,16 @@ describe('routeRoleExecution', () => {
   it('RUNNING → reject_running', () => {
     expect(routeRoleExecution({ status: 'RUNNING' })).toBe('reject_running');
   });
+
+  it('WAITING_APPROVAL → blocked_approval', () => {
+    expect(routeRoleExecution({ status: 'WAITING_APPROVAL' })).toBe(
+      'blocked_approval',
+    );
+  });
+
+  it('FAILED → blocked_failed', () => {
+    expect(routeRoleExecution({ status: 'FAILED' })).toBe('blocked_failed');
+  });
 });
 
 describe('decideExecution', () => {
@@ -21,5 +31,7 @@ describe('decideExecution', () => {
     expect(decideExecution({ status: 'PENDING' })).toBe(true);
     expect(decideExecution({ status: 'RUNNING' })).toBe(false);
     expect(decideExecution({ status: 'COMPLETED' })).toBe(false);
+    expect(decideExecution({ status: 'WAITING_APPROVAL' })).toBe(false);
+    expect(decideExecution({ status: 'FAILED' })).toBe(false);
   });
 });

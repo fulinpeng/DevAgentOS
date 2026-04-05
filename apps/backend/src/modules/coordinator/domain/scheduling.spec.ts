@@ -17,4 +17,21 @@ describe('getNextTask', () => {
       ]),
     ).toBeNull();
   });
+
+  it('队首 FAILED 时返回 null（中止后续）', () => {
+    expect(
+      getNextTask([
+        { id: '1', status: 'FAILED', sortOrder: 0 },
+        { id: '2', status: 'PENDING', sortOrder: 1 },
+      ]),
+    ).toBeNull();
+  });
+
+  it('WAITING_APPROVAL 仍作为下一个节点返回（由 Role 侧幂等挡执行）', () => {
+    const next = getNextTask([
+      { id: '1', status: 'COMPLETED', sortOrder: 0 },
+      { id: '2', status: 'WAITING_APPROVAL', sortOrder: 1 },
+    ]);
+    expect(next?.id).toBe('2');
+  });
 });
