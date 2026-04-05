@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
-/** Worker 执行端口（模拟实现，无外部 API） */
+export const WORKER_EXECUTOR = Symbol('WORKER_EXECUTOR');
+
 export type WorkerExecuteInput = {
   id: string;
   name: string;
