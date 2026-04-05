@@ -6,10 +6,13 @@ import {
   approvalReason,
   parameterSourceLabel,
 } from '../role/domain/approval-policy';
+import { resolveRiskLevelForDisplay } from '../role/domain/risk-policy';
 
 export type TaskDetailNode = Task & {
   parameterSourceLabel: string;
   approvalReason: string | null;
+  /** low | medium | high */
+  riskLevel: string;
 };
 
 export type TaskDetailPayload = {
@@ -23,6 +26,8 @@ export type RootTaskListItem = {
   status: string;
   childCount: number;
   createdAt: Date;
+  /** low | medium | high */
+  riskLevel: string;
 };
 
 /**
@@ -47,6 +52,10 @@ export class TaskQueryService {
       status: r.status,
       childCount: r._count.children,
       createdAt: r.createdAt,
+      riskLevel: resolveRiskLevelForDisplay({
+        name: r.name,
+        parameters: r.parameters,
+      }),
     }));
   }
 
@@ -67,6 +76,7 @@ export class TaskQueryService {
         ...t,
         parameterSourceLabel: parameterSourceLabel(snap),
         approvalReason: approvalReason(snap),
+        riskLevel: resolveRiskLevelForDisplay(snap),
       };
     };
     return {

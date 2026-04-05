@@ -43,9 +43,9 @@ describe('shouldRequireApproval', () => {
 });
 
 describe('approvalReason / taskParameterSource', () => {
-  it('approvalReason 对 LLM 有说明', () => {
+  it('approvalReason 对 MEDIUM（LLM）有说明', () => {
     const t = { name: 'a', parameters: { source: 'llm' } };
-    expect(approvalReason(t)).toContain('AI');
+    expect(approvalReason(t)).toContain('中风险');
     expect(taskParameterSource(t)).toBe('llm');
   });
 

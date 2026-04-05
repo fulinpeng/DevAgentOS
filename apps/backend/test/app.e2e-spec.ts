@@ -138,6 +138,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
     expect(redisStore.get(`task:${subId}`)).toBe('completed');
 
     const steps = getLogsForTask(subId).map((e) => e.step);
+    expect(steps).toContain('risk_evaluated');
     expect(steps).toContain('role_execution_start');
     expect(steps).toContain('worker_called');
     expect(steps).toContain('completed');
@@ -224,6 +225,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
     ).toBe(true);
 
     const stepsWait = getLogsForTask(subId).map((e) => e.step);
+    expect(stepsWait).toContain('risk_evaluated');
     expect(stepsWait).toContain('approval_requested');
 
     const appr = await request(app.getHttpServer())

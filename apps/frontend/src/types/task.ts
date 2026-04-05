@@ -4,6 +4,8 @@ export type RootTaskRow = {
   status: string
   childCount: number
   createdAt: string
+  /** low | medium | high */
+  riskLevel: string
 }
 
 export type TaskNode = {
@@ -20,6 +22,8 @@ export type TaskNode = {
   /** 后端详情/待审批列表附带 */
   parameterSourceLabel?: string
   approvalReason?: string | null
+  /** low | medium | high */
+  riskLevel?: string
 }
 
 export type TaskDetailResponse = {

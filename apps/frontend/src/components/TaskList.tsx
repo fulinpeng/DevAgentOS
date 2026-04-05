@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet } from '../api/client'
 import type { RootTaskRow } from '../types/task'
+import { riskShort } from './RiskBadge'
 
 export function TaskList() {
   const [rows, setRows] = useState<RootTaskRow[] | null>(null)
@@ -39,6 +40,7 @@ export function TaskList() {
           <tr>
             <th>名称</th>
             <th>状态</th>
+            <th>风险</th>
             <th>子任务数</th>
             <th>创建时间</th>
             <th />
@@ -47,7 +49,7 @@ export function TaskList() {
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={5}>暂无数据</td>
+              <td colSpan={6}>暂无数据</td>
             </tr>
           ) : (
             rows.map((r) => (
@@ -56,6 +58,7 @@ export function TaskList() {
                 <td>
                   <code>{r.status}</code>
                 </td>
+                <td>{riskShort(r.riskLevel)}</td>
                 <td>{r.childCount}</td>
                 <td>{new Date(r.createdAt).toLocaleString()}</td>
                 <td>

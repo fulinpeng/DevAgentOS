@@ -1,6 +1,10 @@
 /**
  * 纯领域：是否需要人工审批（无框架 / ORM 依赖）。
+ * 与 {@link evaluateRisk} 联动：HIGH / MEDIUM 默认需审批，LOW 自动执行。
  */
+
+import { RiskLevel } from '@ai-orchestrator/shared';
+import { evaluateRisk } from './risk-policy';
 
 export type ApprovalTaskSnapshot = {
   name: string;
@@ -25,13 +29,8 @@ export function shouldRequireApproval(task: ApprovalTaskSnapshot): boolean {
   if (p?.approvalGranted === true) {
     return false;
   }
-  if (p?.source === 'llm') {
-    return true;
-  }
-  if (task.name.toLowerCase().includes('delete')) {
-    return true;
-  }
-  return false;
+  const risk = evaluateRisk(task);
+  return risk === RiskLevel.HIGH || risk === RiskLevel.MEDIUM;
 }
 
 /** 供控制台展示的简短说明 */
@@ -39,14 +38,14 @@ export function approvalReason(task: ApprovalTaskSnapshot): string | null {
   if (!shouldRequireApproval(task)) {
     return null;
   }
-  const p = parametersRecord(task.parameters);
-  if (p?.source === 'llm') {
-    return '子任务来源为 AI（LLM）拆分，需人工确认后执行。';
+  const risk = evaluateRisk(task);
+  if (risk === RiskLevel.HIGH) {
+    return '需要审批（原因：高风险操作，名称含 delete）。';
   }
-  if (task.name.toLowerCase().includes('delete')) {
-    return '任务名称包含高风险关键词 delete，需人工确认。';
+  if (risk === RiskLevel.MEDIUM) {
+    return '需要审批（原因：中风险 / AI 来源任务）。';
   }
-  return '命中审批规则，需人工确认。';
+  return '需要审批。';
 }
 
 export function taskParameterSource(

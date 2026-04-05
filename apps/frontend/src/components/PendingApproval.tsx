@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet, apiPost } from '../api/client'
 import type { TaskNode } from '../types/task'
+import { riskShort } from './RiskBadge'
 
 export function PendingApproval() {
   const [rows, setRows] = useState<TaskNode[] | null>(null)
@@ -66,6 +67,7 @@ export function PendingApproval() {
             <tr>
               <th>名称</th>
               <th>来源</th>
+              <th>风险</th>
               <th>审批说明</th>
               <th />
             </tr>
@@ -73,13 +75,14 @@ export function PendingApproval() {
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={4}>暂无待审批任务</td>
+                <td colSpan={5}>暂无待审批任务</td>
               </tr>
             ) : (
               rows.map((r) => (
                 <tr key={r.id}>
                   <td>{r.name}</td>
                   <td>{r.parameterSourceLabel ?? '—'}</td>
+                  <td>{r.riskLevel ? riskShort(r.riskLevel) : '—'}</td>
                   <td className="muted" style={{ maxWidth: 280 }}>
                     {r.approvalReason ?? '—'}
                   </td>

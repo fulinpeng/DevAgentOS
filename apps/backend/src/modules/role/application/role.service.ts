@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Task, TaskStatus } from '@prisma/client';
 import { shouldRequireApproval } from '../domain/approval-policy';
+import { evaluateRisk } from '../domain/risk-policy';
 import {
   routeRoleExecution,
   type TaskStatusSnapshot,
@@ -43,6 +44,14 @@ function jsonToResultRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   return {};
+}
+
+function mergeParameters(
+  base: unknown,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const prev = jsonToResultRecord(base);
+  return { ...prev, ...patch };
 }
 
 @Injectable()
@@ -139,9 +148,20 @@ export class RoleService {
         );
       }
 
-      if (shouldRequireApproval(latest)) {
-        const waiting = await this.taskRepository.updateStatus(taskId, {
+      const risk = evaluateRisk(latest);
+      const mergedParams = mergeParameters(latest.parameters, {
+        riskLevel: risk,
+      });
+
+      await this.taskRedis.appendLog(taskId, 'risk_evaluated', {
+        level: risk,
+      });
+
+      const gateSnapshot = { name: latest.name, parameters: mergedParams };
+      if (shouldRequireApproval(gateSnapshot)) {
+        const waiting = await this.taskRepository.updateTask(taskId, {
           status: TaskStatus.WAITING_APPROVAL,
+          parameters: mergedParams,
         });
         await this.taskRedis.updateStatus(taskId, REDIS_WAITING_APPROVAL);
         await this.taskRedis.appendLog(taskId, 'approval_requested');
@@ -152,16 +172,20 @@ export class RoleService {
         };
       }
 
+      const latestForRun = await this.taskRepository.updateTask(taskId, {
+        parameters: mergedParams,
+      });
+
       await this.taskRedis.appendLog(taskId, 'role_execution_start');
-      await this.taskRepository.updateStatus(taskId, {
+      await this.taskRepository.updateTask(taskId, {
         status: TaskStatus.RUNNING,
       });
       await this.taskRedis.updateStatus(taskId, REDIS_RUNNING);
 
       const workerResult = await this.workerExecutor.execute({
-        id: latest.id,
-        name: latest.name,
-        role: latest.role,
+        id: latestForRun.id,
+        name: latestForRun.name,
+        role: latestForRun.role,
       });
 
       await this.taskRedis.appendLog(taskId, 'worker_called', {
@@ -172,7 +196,7 @@ export class RoleService {
         throw new BadRequestException('Worker execution failed');
       }
 
-      const updated = await this.taskRepository.updateStatus(taskId, {
+      const updated = await this.taskRepository.updateTask(taskId, {
         status: TaskStatus.COMPLETED,
         result: workerResult.result,
       });

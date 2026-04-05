@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { apiGet, apiPost } from '../api/client'
 import type { TaskDetailResponse, TaskNode } from '../types/task'
+import { RiskBadge } from './RiskBadge'
 import { TaskLogs } from './TaskLogs'
 
 function TaskRow({ t, depth }: { t: TaskNode; depth: number }) {
@@ -16,6 +17,9 @@ function TaskRow({ t, depth }: { t: TaskNode; depth: number }) {
       </td>
       <td>{t.role ?? '—'}</td>
       <td>{t.parameterSourceLabel ?? '—'}</td>
+      <td>
+        {t.riskLevel ? <RiskBadge level={t.riskLevel} /> : '—'}
+      </td>
       <td>
         <Link to={`/task/${t.id}`}>查看</Link>
       </td>
@@ -104,6 +108,12 @@ export function TaskDetail() {
         </p>
         <p className="muted">
           来源：<strong>{task.parameterSourceLabel ?? '—'}</strong>
+          {task.riskLevel ? (
+            <>
+              {' '}
+              · <RiskBadge level={task.riskLevel} />
+            </>
+          ) : null}
           {task.approvalReason ? (
             <>
               {' '}
@@ -141,6 +151,7 @@ export function TaskDetail() {
               <th>状态</th>
               <th>角色</th>
               <th>来源</th>
+              <th>风险</th>
               <th />
             </tr>
           </thead>

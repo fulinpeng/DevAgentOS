@@ -11,10 +11,12 @@ import {
   approvalReason,
   parameterSourceLabel,
 } from '../role/domain/approval-policy';
+import { resolveRiskLevelForDisplay } from '../role/domain/risk-policy';
 
 export type PendingApprovalRow = Task & {
   parameterSourceLabel: string;
   approvalReason: string | null;
+  riskLevel: string;
 };
 
 function enrichTask(row: Task): PendingApprovalRow {
@@ -23,6 +25,7 @@ function enrichTask(row: Task): PendingApprovalRow {
     ...row,
     parameterSourceLabel: parameterSourceLabel(snap),
     approvalReason: approvalReason(snap),
+    riskLevel: resolveRiskLevelForDisplay(snap),
   };
 }
 

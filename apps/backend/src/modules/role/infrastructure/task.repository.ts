@@ -10,18 +10,24 @@ export class RoleTaskRepository {
     return this.prisma.task.findUnique({ where: { id } });
   }
 
-  async updateStatus(
+  async updateTask(
     id: string,
-    input: { status: TaskStatus; result?: Record<string, unknown> },
+    input: {
+      status?: TaskStatus;
+      result?: Record<string, unknown>;
+      parameters?: Record<string, unknown>;
+    },
   ): Promise<Task> {
     return this.prisma.task.update({
       where: { id },
       data: {
-        status: input.status,
-        result:
-          input.result !== undefined
-            ? (input.result as Prisma.InputJsonValue)
-            : undefined,
+        ...(input.status !== undefined && { status: input.status }),
+        ...(input.result !== undefined && {
+          result: input.result as Prisma.InputJsonValue,
+        }),
+        ...(input.parameters !== undefined && {
+          parameters: input.parameters as Prisma.InputJsonValue,
+        }),
       },
     });
   }
