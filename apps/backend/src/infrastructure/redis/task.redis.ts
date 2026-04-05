@@ -19,7 +19,12 @@ export class TaskRedis implements OnModuleDestroy {
 
   constructor(private readonly config: ConfigService) {
     const url = this.config.get<string>('REDIS_URL', 'redis://127.0.0.1:6379');
-    this.client = new Redis(url);
+    this.client = new Redis(url, {
+      connectTimeout: 5000,
+      maxRetriesPerRequest: 2,
+      /** 未连上 Redis 时立刻失败，避免命令无限排队导致 HTTP 一直 pending */
+      enableOfflineQueue: false,
+    });
   }
 
   async onModuleDestroy() {
