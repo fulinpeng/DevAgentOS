@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { clipLlmRawForRedis } from '../../../infrastructure/llm-log-meta';
 import { TaskRedis } from '../../../infrastructure/redis/task.redis';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type {
@@ -120,20 +121,38 @@ export class WorkerExecutorService implements IWorkerExecutor {
       }
       const parsed = parseWorkerActionJson(raw);
       if (!parsed) {
+        const clipped = clipLlmRawForRedis(this.config, raw);
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'worker_llm_invalid_json',
+          time: new Date().toISOString(),
+          meta: {
+            raw: clipped.text,
+            rawChars: clipped.totalChars,
+            rawTruncated: clipped.truncated,
+          },
+        });
         return {
           success: false,
           result: {
             error: 'worker_llm_invalid_json',
-            raw: raw.slice(0, 500),
+            raw: clipped.text,
+            rawChars: clipped.totalChars,
+            rawTruncated: clipped.truncated,
           },
         };
       }
       action = parsed.action;
       args = parsed.args;
+      const clippedOk = clipLlmRawForRedis(this.config, raw);
       await this.taskRedis.appendExecutionLog(task.id, {
         step: 'worker_llm_ok',
         time: new Date().toISOString(),
-        meta: { action, rawChars: raw.length },
+        meta: {
+          action,
+          raw: clippedOk.text,
+          rawChars: clippedOk.totalChars,
+          rawTruncated: clippedOk.truncated,
+        },
       });
       this.logger.log(
         `Worker LLM 已接入：解析 action=${action} taskId=${task.id}`,

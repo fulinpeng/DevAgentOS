@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Task, TaskStatus } from '@prisma/client';
+import { clipLlmRawForRedis } from '../../../infrastructure/llm-log-meta';
 import { TaskRedis } from '../../../infrastructure/redis/task.redis';
 import { WORKFLOW_SPLIT_PROMPT_VERSION } from '../domain/task-split.constants';
 import { splitTask } from '../domain/task-split';
@@ -119,13 +120,24 @@ export class WorkflowService {
     for (const sub of subTasks) {
       await this.taskRedis.setTaskStatus(sub.id, REDIS_STATUS_PENDING);
     }
+    const llmTrim = llmRaw?.trim() ?? '';
+    const clipped = llmTrim
+      ? clipLlmRawForRedis(this.config, llmTrim)
+      : null;
     await this.taskRedis.appendExecutionLog(parentTask.id, {
       step: 'plan_generated',
       time: new Date().toISOString(),
       meta: {
         subTaskCount: subTasks.length,
-        /** 本次拆分是否使用了 LLM 返回的 JSON（否则为规则/解析 fallback） */
-        llmSplitUsed: Boolean(llmRaw?.trim()),
+        llmSplitUsed: Boolean(llmTrim),
+        ...(clipped
+          ? {
+              /** 模型返回的完整原文（默认不截断，见 LLM_RAW_LOG_MAX_CHARS） */
+              llmRaw: clipped.text,
+              llmRawChars: clipped.totalChars,
+              llmRawTruncated: clipped.truncated,
+            }
+          : {}),
       },
     });
 
