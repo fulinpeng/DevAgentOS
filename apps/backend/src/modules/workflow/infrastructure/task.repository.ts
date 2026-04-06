@@ -7,6 +7,10 @@ import type { SubTaskSpec } from '../domain/task-split';
 export class TaskRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findById(id: string): Promise<Task | null> {
+    return this.prisma.task.findUnique({ where: { id } });
+  }
+
   async createTask(input: {
     name: string;
     parameters?: Record<string, unknown>;
@@ -20,7 +24,7 @@ export class TaskRepository {
           input.parameters !== undefined
             ? (input.parameters as Prisma.InputJsonValue)
             : undefined,
-        status: TaskStatus.PENDING,
+        status: TaskStatus.CREATED,
       },
     });
   }
@@ -43,5 +47,23 @@ export class TaskRepository {
         }),
       ),
     );
+  }
+
+  async deleteChildrenOfParent(parentId: string): Promise<number> {
+    const r = await this.prisma.task.deleteMany({
+      where: { parentId },
+    });
+    return r.count;
+  }
+
+  async updateTaskStatus(id: string, status: TaskStatus): Promise<Task> {
+    return this.prisma.task.update({
+      where: { id },
+      data: { status },
+    });
+  }
+
+  async countChildren(parentId: string): Promise<number> {
+    return this.prisma.task.count({ where: { parentId } });
   }
 }

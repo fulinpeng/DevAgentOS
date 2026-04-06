@@ -8,6 +8,12 @@ datasource db {
 }
 
 enum TaskStatus {
+  /// 主任务：仅需求，尚未生成子任务
+  CREATED
+  /// 主任务：已生成子任务，等待人审计划（与 WAITING_PLAN_APPROVAL 二选一使用时可省略）
+  PLAN_GENERATED
+  WAITING_PLAN_APPROVAL
+  PLAN_APPROVED
   PENDING
   WAITING_APPROVAL
   RUNNING
@@ -21,7 +27,7 @@ model Task {
   parent     Task?      @relation("TaskTree", fields: [parentId], references: [id], onDelete: Cascade)
   children   Task[]     @relation("TaskTree")
   name       String
-  status     TaskStatus @default(PENDING)
+  status     TaskStatus @default(CREATED)
   role       String?
   /// 同级排序，对应库列名 order（Prisma 字段名用 sortOrder 避免与 orderBy 语义混淆）
   sortOrder  Int        @default(0) @map("order")

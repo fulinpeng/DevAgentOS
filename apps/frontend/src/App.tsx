@@ -1,4 +1,5 @@
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
+import { EditTask } from './components/EditTask'
 import { NewTask } from './components/NewTask'
 import { PendingApproval } from './components/PendingApproval'
 import { TaskDetail } from './components/TaskDetail'
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/" element={<TaskList />} />
           <Route path="/new-task" element={<NewTask />} />
           <Route path="/pending-approval" element={<PendingApproval />} />
+          <Route path="/task/:id/edit" element={<EditTask />} />
           <Route path="/task/:id" element={<TaskDetail />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

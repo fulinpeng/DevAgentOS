@@ -45,6 +45,81 @@ export class TaskApprovalService {
     return rows.map(enrichTask);
   }
 
+  /** 主任务：等待审批执行计划 */
+  async listPendingPlanApprovals() {
+    return this.prisma.task.findMany({
+      where: {
+        parentId: null,
+        status: TaskStatus.WAITING_PLAN_APPROVAL,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        children: { orderBy: { sortOrder: 'asc' } },
+      },
+    });
+  }
+
+  /** 批准计划：主任务 WAITING_PLAN_APPROVAL → PLAN_APPROVED */
+  async approvePlan(parentId: string) {
+    const parent = await this.prisma.task.findUnique({
+      where: { id: parentId },
+      include: { children: true },
+    });
+    if (!parent || parent.parentId !== null) {
+      throw new NotFoundException(`Parent task ${parentId} not found`);
+    }
+    if (parent.status !== TaskStatus.WAITING_PLAN_APPROVAL) {
+      throw new ConflictException(
+        `任务不在待审计划状态（当前=${parent.status}）`,
+      );
+    }
+    if (parent.children.length === 0) {
+      throw new ConflictException('没有子任务，无法批准计划');
+    }
+
+    const updated = await this.prisma.task.update({
+      where: { id: parentId },
+      data: { status: TaskStatus.PLAN_APPROVED },
+    });
+
+    await this.taskRedis.appendExecutionLog(parentId, {
+      step: 'plan_approved',
+      time: new Date().toISOString(),
+      meta: { subTaskCount: parent.children.length },
+    });
+
+    return { parent: updated };
+  }
+
+  /** 驳回计划：删除子任务，主任务回到 CREATED */
+  async rejectPlan(parentId: string) {
+    const parent = await this.prisma.task.findUnique({
+      where: { id: parentId },
+      include: { children: true },
+    });
+    if (!parent || parent.parentId !== null) {
+      throw new NotFoundException(`Parent task ${parentId} not found`);
+    }
+    if (parent.status !== TaskStatus.WAITING_PLAN_APPROVAL) {
+      throw new ConflictException(
+        `任务不在待审计划状态（当前=${parent.status}）`,
+      );
+    }
+
+    await this.prisma.task.deleteMany({ where: { parentId } });
+    const updated = await this.prisma.task.update({
+      where: { id: parentId },
+      data: { status: TaskStatus.CREATED },
+    });
+
+    await this.taskRedis.appendExecutionLog(parentId, {
+      step: 'plan_rejected',
+      time: new Date().toISOString(),
+    });
+
+    return { parent: updated };
+  }
+
   async approve(taskId: string) {
     const task = await this.prisma.task.findUnique({ where: { id: taskId } });
     if (!task) {

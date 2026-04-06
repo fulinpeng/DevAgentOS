@@ -13,6 +13,23 @@ import { TaskApprovalService } from './task-approval.service';
 export class TaskApprovalController {
   constructor(private readonly taskApprovalService: TaskApprovalService) {}
 
+  @Get('pending-plan-approval')
+  pendingPlanApproval() {
+    return this.taskApprovalService.listPendingPlanApprovals();
+  }
+
+  @Post('approve-plan/:id')
+  @HttpCode(HttpStatus.OK)
+  approvePlan(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.taskApprovalService.approvePlan(id);
+  }
+
+  @Post('reject-plan/:id')
+  @HttpCode(HttpStatus.OK)
+  rejectPlan(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.taskApprovalService.rejectPlan(id);
+  }
+
   @Get('pending-approval')
   pendingApproval() {
     return this.taskApprovalService.listPendingApproval();

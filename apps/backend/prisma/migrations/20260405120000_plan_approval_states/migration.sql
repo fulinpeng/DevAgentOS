@@ -1,0 +1,1 @@
+-- SQLite: Task.status 为 TEXT；新增 Plan 阶段状态。已有行保持原值。

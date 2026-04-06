@@ -2,9 +2,14 @@
  * 纯领域：在子任务集合中选取下一个待完成项（无框架依赖）。
  */
 
+/** 与 Prisma `TaskStatus` 对齐（子任务状态快照） */
 export type ChildTaskSnapshot = {
   id: string;
   status:
+    | 'CREATED'
+    | 'PLAN_GENERATED'
+    | 'WAITING_PLAN_APPROVAL'
+    | 'PLAN_APPROVED'
     | 'PENDING'
     | 'WAITING_APPROVAL'
     | 'RUNNING'

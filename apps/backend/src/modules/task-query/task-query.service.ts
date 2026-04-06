@@ -1,5 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Task } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma, Task, TaskStatus } from '@prisma/client';
 import { TaskRedis } from '../../infrastructure/redis/task.redis';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -31,7 +36,7 @@ export type RootTaskListItem = {
 };
 
 /**
- * 只读查询：供控制台展示，不参与任务状态机写入。
+ * 任务查询为主；另提供 CREATED 主任务的草稿编辑（合并 parameters）。
  */
 @Injectable()
 export class TaskQueryService {
@@ -87,5 +92,42 @@ export class TaskQueryService {
 
   getTaskLogs(taskId: string) {
     return this.taskRedis.getExecutionLogs(taskId);
+  }
+
+  /**
+   * 仅主任务且 CREATED：可选更新 name；若带 parameters 则整段替换（便于清空 features 等字段）。
+   */
+  async updateRootTaskDraft(
+    taskId: string,
+    dto: { name?: string; parameters?: Record<string, unknown> },
+  ): Promise<TaskDetailPayload> {
+    if (dto.name === undefined && dto.parameters === undefined) {
+      throw new BadRequestException('至少需要提供 name 或 parameters 之一');
+    }
+
+    const task = await this.prisma.task.findUnique({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+    if (task.parentId !== null) {
+      throw new BadRequestException('仅主任务可编辑草稿');
+    }
+    if (task.status !== TaskStatus.CREATED) {
+      throw new ConflictException(
+        `仅 CREATED 状态可编辑名称与参数（当前=${task.status}）`,
+      );
+    }
+
+    await this.prisma.task.update({
+      where: { id: taskId },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.parameters !== undefined
+          ? { parameters: dto.parameters as Prisma.InputJsonValue }
+          : {}),
+      },
+    });
+
+    return this.getTaskDetail(taskId);
   }
 }

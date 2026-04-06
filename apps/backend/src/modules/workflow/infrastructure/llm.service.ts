@@ -89,6 +89,15 @@ export class WorkflowLlmService {
     if (typeof content !== 'string' || !content.trim()) {
       throw new Error('LLM returned empty or invalid content');
     }
+    let host = baseUrl;
+    try {
+      host = new URL(baseUrl).host;
+    } catch {
+      /* keep raw */
+    }
+    this.logger.log(
+      `LLM 请求成功（已接入）：model=${model} endpoint=${host} charsOut=${content.trim().length}`,
+    );
     return content.trim();
   }
 
@@ -105,13 +114,17 @@ export class WorkflowLlmService {
   ): Promise<string | null> {
     const apiKey = getDashScopeApiKey(this.config);
     if (!apiKey) {
-      this.logger.debug(
-        'LLM split skipped (no DASHSCOPE_API_KEY / QWEN_API_KEY), using rule fallback',
+      this.logger.log(
+        'LLM 未调用（未配置 DASHSCOPE_API_KEY / QWEN_API_KEY），拆任务将走规则 fallback',
       );
       return null;
     }
     try {
-      return await this.callSplitTaskJson(name, features);
+      const out = await this.callSplitTaskJson(name, features);
+      this.logger.log(
+        `LLM 拆任务已接入：收到模型响应，长度=${out.trim().length}`,
+      );
+      return out;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.warn(`LLM split failed, will use rule fallback: ${msg}`);

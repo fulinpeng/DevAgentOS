@@ -68,7 +68,21 @@ export class RoleService {
       throw new NotFoundException(`Task ${taskId} not found`);
     }
 
+    if (!task.parentId) {
+      const childCount = await this.taskRepository.countChildren(task.id);
+      if (childCount > 0) {
+        throw new ConflictException(
+          `含子任务的主任务请使用 POST /coordinator/run/${task.id} 执行，勿对主任务直接调用 Role`,
+        );
+      }
+    }
+
     const route = routeRoleExecution({ status: toStatusSnapshot(task.status) });
+    if (route === 'blocked_plan') {
+      throw new ConflictException(
+        '主任务当前不可由 Role 直接执行：请先 POST /workflow/generate/:taskId 生成计划，再 POST /task/approve-plan/:id 审批，最后 POST /coordinator/run/:id',
+      );
+    }
     if (route === 'blocked_approval') {
       return {
         task,
@@ -147,6 +161,11 @@ export class RoleService {
           `Task ${taskId} is already running; retry later`,
         );
       }
+      if (r2 === 'blocked_plan') {
+        throw new ConflictException(
+          '主任务当前不可由 Role 直接执行：请先完成计划生成与审批，再使用 Coordinator',
+        );
+      }
 
       const risk = evaluateRisk(latest);
       const mergedParams = mergeParameters(latest.parameters, {
@@ -186,6 +205,8 @@ export class RoleService {
         id: latestForRun.id,
         name: latestForRun.name,
         role: latestForRun.role,
+        parameters: jsonToResultRecord(latestForRun.parameters),
+        parentId: latestForRun.parentId,
       });
 
       await this.taskRedis.appendLog(taskId, 'worker_called', {

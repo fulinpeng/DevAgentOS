@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -32,14 +33,20 @@ export class CoordinatorService {
     }
 
     const { parent, children } = bundle;
+
+    if (parent.status !== TaskStatus.PLAN_APPROVED) {
+      throw new ConflictException(
+        `须先通过计划审批（PLAN_APPROVED）后再运行 Coordinator（当前主任务状态=${parent.status}）。请依次：POST /workflow/generate/:id → POST /task/approve-plan/:id`,
+      );
+    }
+
     const executedTaskIds: string[] = [];
 
     if (children.length === 0) {
-      if (parent.status !== TaskStatus.COMPLETED) {
-        const r = await this.roleService.executeTask(parent.id);
-        if (!r.pausedForApproval && !r.idempotent) {
-          executedTaskIds.push(parent.id);
-        }
+      // 已通过 PLAN_APPROVED 门禁，此处主任务不会是 COMPLETED
+      const r = await this.roleService.executeTask(parent.id);
+      if (!r.pausedForApproval && !r.idempotent) {
+        executedTaskIds.push(parent.id);
       }
       const fresh = await this.repository.findParentWithChildren(parentId);
       return { parent: fresh!.parent, executedTaskIds };

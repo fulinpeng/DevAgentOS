@@ -9,6 +9,6 @@ export class WorkflowController {
   @Post('create')
   @HttpCode(HttpStatus.CREATED)
   create(@Body() dto: CreateTaskDto) {
-    return this.workflowService.createTaskWithSplit(dto.name, dto.parameters);
+    return this.workflowService.createTaskOnly(dto.name, dto.parameters);
   }
 }

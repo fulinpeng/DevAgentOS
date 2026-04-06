@@ -63,6 +63,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .overrideProvider(WorkflowLlmService)
       .useValue({
         tryCallSplitTaskJson: async () => null as string | null,
+        callLLM: async () => '{"action":"noop","args":{}}',
       })
       .compile();
 
@@ -76,43 +77,87 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
     await prisma.task.deleteMany();
   });
 
-  it('POST /task/create：库表 3 条、父子关系、Redis pending', async () => {
+  async function generateAndApprovePlan(parentId: string) {
+    await request(app.getHttpServer())
+      .post(`/workflow/generate/${parentId}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/task/approve-plan/${parentId}`)
+      .expect(200);
+  }
+
+  it('POST /task/create：仅主任务 CREATED，无子任务', async () => {
     const res = await request(app.getHttpServer())
       .post('/task/create')
       .send({
         name: 'build a web page',
-        parameters: { features: ['login', 'dashboard'] },
+        parameters: {
+          features: ['login', 'dashboard'],
+          outputDir: 'apps/frontend/src',
+        },
       })
       .expect(201);
 
     const { parentTask, subTasks } = res.body;
+    expect(subTasks).toHaveLength(0);
+    expect(parentTask.status).toBe('CREATED');
+
     const prisma = app.get(PrismaService);
-    const tasks = await prisma.task.findMany();
+    const count = await prisma.task.count();
+    expect(count).toBe(1);
+  });
 
-    expect(tasks).toHaveLength(3);
+  it('PATCH /task/:id：CREATED 主任务可补全 parameters', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post('/task/create')
+      .send({ name: 'draft only' })
+      .expect(201);
 
-    const parent = tasks.find((t) => t.parentId === null);
-    expect(parent).toBeDefined();
-    expect(parent!.name).toBe('build a web page');
-    expect(parent!.role).toBeNull();
+    const parentId = createRes.body.parentTask.id as string;
 
-    const children = tasks.filter((t) => t.parentId === parent!.id);
-    expect(children).toHaveLength(2);
-    expect(children.map((c) => c.name).sort()).toEqual([
-      'build dashboard',
-      'build login',
-    ]);
-    children.forEach((c) => {
-      expect(c.role).toBe('frontend');
-      expect(c.parentId).toBe(parent!.id);
-    });
+    const patch = await request(app.getHttpServer())
+      .patch(`/task/${parentId}`)
+      .send({
+        name: 'draft only',
+        parameters: { features: ['a', 'b'], outputDir: 'apps/frontend/src' },
+      })
+      .expect(200);
 
-    expect(subTasks[0].name).toBe('build login');
-    expect(subTasks[1].name).toBe('build dashboard');
+    expect(patch.body.task.status).toBe('CREATED');
+    const params = patch.body.task.parameters as {
+      features: string[];
+      outputDir: string;
+    };
+    expect(params.features).toEqual(['a', 'b']);
+    expect(params.outputDir).toBe('apps/frontend/src');
+  });
 
-    expect(redisStore.get(`task:${parentTask.id}`)).toBe('pending');
-    expect(redisStore.get(`task:${subTasks[0].id}`)).toBe('pending');
-    expect(redisStore.get(`task:${subTasks[1].id}`)).toBe('pending');
+  it('POST /workflow/generate + approve-plan：生成子任务且主任务 PLAN_APPROVED', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post('/task/create')
+      .send({
+        name: 'build a web page',
+        parameters: {
+          features: ['login', 'dashboard'],
+          outputDir: 'apps/frontend/src',
+        },
+      })
+      .expect(201);
+
+    const parentId = createRes.body.parentTask.id as string;
+
+    const gen = await request(app.getHttpServer())
+      .post(`/workflow/generate/${parentId}`)
+      .expect(200);
+
+    expect(gen.body.parentTask.status).toBe('WAITING_PLAN_APPROVAL');
+    expect(gen.body.subTasks).toHaveLength(2);
+
+    const appr = await request(app.getHttpServer())
+      .post(`/task/approve-plan/${parentId}`)
+      .expect(200);
+
+    expect(appr.body.parent.status).toBe('PLAN_APPROVED');
   });
 
   it('POST /role/execute：状态与 Redis，执行日志包含关键 step', async () => {
@@ -120,19 +165,30 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .post('/task/create')
       .send({
         name: 'build a web page',
-        parameters: { features: ['login', 'dashboard'] },
+        parameters: {
+          features: ['login', 'dashboard'],
+          outputDir: 'apps/frontend/src',
+        },
       })
       .expect(201);
 
-    const subId = createRes.body.subTasks[0].id as string;
+    const parentId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(parentId);
+
+    const prisma = app.get(PrismaService);
+    const sub = await prisma.task.findFirstOrThrow({
+      where: { parentId },
+      orderBy: { sortOrder: 'asc' },
+    });
+    const subId = sub.id;
 
     const execRes = await request(app.getHttpServer())
       .post(`/role/execute/${subId}`)
       .expect(200);
 
-    expect(execRes.body.workerResult).toEqual({
-      success: true,
-      result: {},
+    expect(execRes.body.workerResult.success).toBe(true);
+    expect(execRes.body.workerResult.result).toMatchObject({
+      action: 'noop',
     });
     expect(execRes.body.task.status).toBe('COMPLETED');
     expect(redisStore.get(`task:${subId}`)).toBe('completed');
@@ -140,6 +196,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
     const steps = getLogsForTask(subId).map((e) => e.step);
     expect(steps).toContain('risk_evaluated');
     expect(steps).toContain('role_execution_start');
+    expect(steps).toContain('tool_called');
     expect(steps).toContain('worker_called');
     expect(steps).toContain('completed');
   });
@@ -149,11 +206,19 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .post('/task/create')
       .send({
         name: 'x',
-        parameters: { features: ['a'] },
+        parameters: { features: ['a'], outputDir: 'apps/frontend/src' },
       })
       .expect(201);
 
-    const subId = createRes.body.subTasks[0].id as string;
+    const parentId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(parentId);
+
+    const prisma = app.get(PrismaService);
+    const sub = await prisma.task.findFirstOrThrow({
+      where: { parentId },
+    });
+    const subId = sub.id;
+
     await request(app.getHttpServer())
       .post(`/role/execute/${subId}`)
       .expect(200);
@@ -171,12 +236,19 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .post('/task/create')
       .send({
         name: 'x',
-        parameters: { features: ['a'] },
+        parameters: { features: ['a'], outputDir: 'apps/frontend/src' },
       })
       .expect(201);
 
-    const subId = createRes.body.subTasks[0].id as string;
+    const parentId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(parentId);
+
     const prisma = app.get(PrismaService);
+    const sub = await prisma.task.findFirstOrThrow({
+      where: { parentId },
+    });
+    const subId = sub.id;
+
     await prisma.task.update({
       where: { id: subId },
       data: { status: TaskStatus.RUNNING },
@@ -192,12 +264,23 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .post('/task/create')
       .send({
         name: 'build a web page',
-        parameters: { features: ['login', 'dashboard'] },
+        parameters: {
+          features: ['login', 'dashboard'],
+          outputDir: 'apps/frontend/src',
+        },
       })
       .expect(201);
 
-    const subId = createRes.body.subTasks[0].id as string;
+    const parentId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(parentId);
+
     const prisma = app.get(PrismaService);
+    const sub = await prisma.task.findFirstOrThrow({
+      where: { parentId },
+      orderBy: { sortOrder: 'asc' },
+    });
+    const subId = sub.id;
+
     await prisma.task.update({
       where: { id: subId },
       data: {
@@ -245,12 +328,23 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .post('/task/create')
       .send({
         name: 'build a web page',
-        parameters: { features: ['login', 'dashboard'] },
+        parameters: {
+          features: ['login', 'dashboard'],
+          outputDir: 'apps/frontend/src',
+        },
       })
       .expect(201);
 
-    const subId = createRes.body.subTasks[0].id as string;
+    const parentId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(parentId);
+
     const prisma = app.get(PrismaService);
+    const sub = await prisma.task.findFirstOrThrow({
+      where: { parentId },
+      orderBy: { sortOrder: 'asc' },
+    });
+    const subId = sub.id;
+
     await prisma.task.update({
       where: { id: subId },
       data: {
@@ -273,16 +367,20 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
     expect(steps).toContain('rejected');
   });
 
-  it('POST /coordinator/run/:parentId 顺序执行子任务并完成主任务', async () => {
+  it('POST /coordinator/run：须先 PLAN_APPROVED，顺序执行子任务并完成主任务', async () => {
     const createRes = await request(app.getHttpServer())
       .post('/task/create')
       .send({
         name: 'build a web page',
-        parameters: { features: ['login', 'dashboard'] },
+        parameters: {
+          features: ['login', 'dashboard'],
+          outputDir: 'apps/frontend/src',
+        },
       })
       .expect(201);
 
     const parentId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(parentId);
 
     const runRes = await request(app.getHttpServer())
       .post(`/coordinator/run/${parentId}`)

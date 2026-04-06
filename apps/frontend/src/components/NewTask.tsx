@@ -1,4 +1,5 @@
-import { FormEvent, useState } from 'react'
+import type { FormEvent } from 'react'
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { apiPost } from '../api/client'
 import type { CreateTaskResponse } from '../types/task'
@@ -16,6 +17,7 @@ export function NewTask() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [features, setFeatures] = useState('')
+  const [outputDir, setOutputDir] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -30,11 +32,19 @@ export function NewTask() {
     const featureList = parseFeatures(features)
     setBusy(true)
     try {
-      const body: { name: string; parameters?: { features: string[] } } = {
+      const params: Record<string, unknown> = {}
+      if (featureList && featureList.length > 0) {
+        params.features = featureList
+      }
+      const od = outputDir.trim()
+      if (od) {
+        params.outputDir = od
+      }
+      const body: { name: string; parameters?: Record<string, unknown> } = {
         name: n,
       }
-      if (featureList && featureList.length > 0) {
-        body.parameters = { features: featureList }
+      if (Object.keys(params).length > 0) {
+        body.parameters = params
       }
       const res = await apiPost<CreateTaskResponse>('/task/create', body)
       navigate(`/task/${res.parentTask.id}`, { replace: true })
@@ -54,8 +64,8 @@ export function NewTask() {
       <div className="panel">
         <h2>新建任务</h2>
         <p className="muted">
-          提交后将调用 <code>POST /task/create</code>
-          ；填写 features 时会尝试走 LLM 拆分（需配置 DASHSCOPE_API_KEY），否则为规则拆分。
+          仅创建需求（CREATED）。生成子任务请点击详情页「生成计划」；填写 features 后生成时会走
+          LLM/规则拆分（需 DASHSCOPE_API_KEY）。
         </p>
 
         <form className="new-task-form" onSubmit={(e) => void onSubmit(e)}>
@@ -75,12 +85,24 @@ export function NewTask() {
           </label>
 
           <label className="form-field">
-            <span>Features（可选，逗号分隔）</span>
+            <span>Features（生成计划时必填，逗号分隔）</span>
             <input
               type="text"
               value={features}
               onChange={(e) => setFeatures(e.target.value)}
               placeholder="login, dashboard"
+              disabled={busy}
+              autoComplete="off"
+            />
+          </label>
+
+          <label className="form-field">
+            <span>输出目录 outputDir（可选）</span>
+            <input
+              type="text"
+              value={outputDir}
+              onChange={(e) => setOutputDir(e.target.value)}
+              placeholder="apps/frontend/src"
               disabled={busy}
               autoComplete="off"
             />

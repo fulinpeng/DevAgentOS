@@ -37,7 +37,7 @@ export type LogEntry = {
   meta?: Record<string, unknown>
 }
 
-/** POST /task/create 响应 */
+/** POST /task/create 响应（两阶段流程下 subTasks 通常为空，子任务在「生成计划」后才有） */
 export type CreateTaskResponse = {
   parentTask: { id: string; name: string; status: string }
   subTasks: Array<{ id: string; name: string; status: string }>

@@ -22,3 +22,16 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   }
   return res.json() as Promise<T>
 }
+
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${baseUrl}${path.startsWith('/') ? path : `/${path}`}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`${res.status}: ${text}`)
+  }
+  return res.json() as Promise<T>
+}

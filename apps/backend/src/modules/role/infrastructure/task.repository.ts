@@ -10,6 +10,10 @@ export class RoleTaskRepository {
     return this.prisma.task.findUnique({ where: { id } });
   }
 
+  async countChildren(parentId: string): Promise<number> {
+    return this.prisma.task.count({ where: { parentId } });
+  }
+
   async updateTask(
     id: string,
     input: {

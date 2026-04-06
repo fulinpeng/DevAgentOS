@@ -65,6 +65,12 @@ export function TaskList() {
                 <td>{new Date(r.createdAt).toLocaleString()}</td>
                 <td>
                   <Link to={`/task/${r.id}`}>详情</Link>
+                  {r.status === 'CREATED' ? (
+                    <>
+                      {' · '}
+                      <Link to={`/task/${r.id}/edit`}>编辑</Link>
+                    </>
+                  ) : null}
                 </td>
               </tr>
             ))
