@@ -9,7 +9,7 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 # 可用工具（每一步 action 字段填其一）
 
 1. runCommand — args: { "command": string, "cwd"?: string }
-   - 仅允许命令以如下前缀开头：pnpm create vite、pnpm install、pnpm add
+   - 仅允许命令以如下前缀开头：pnpm create vite、pnpm install、pnpm add（安全白名单；具体依赖包名须与 User 中给出的技术栈一致）
 2. writeFile — args: { "path": string, "content": string }
 3. readFile — args: { "path": string }
 4. listFiles — args: { "path"?: string }，默认 "."
@@ -43,6 +43,10 @@ export type BuildWorkerUserContentInput = {
   /** 项目/工作流目标 */
   goal: string;
   role: string | null;
+  /** Workflow 级技术栈（parameters.workflowTechStack） */
+  workflowTechStack?: string[];
+  /** 子任务侧重技术栈（parameters.taskTechStack） */
+  taskTechStack?: string[];
   /** 相对仓库根的 outputDir */
   outputDirRelative: string;
   /** 深度扫描得到的文件列表（最多 50） */
@@ -59,6 +63,19 @@ export function clipWorkerUserPrompt(text: string): string {
     return text;
   }
   return `${text.slice(0, MAX_USER_PROMPT_CHARS)}\n\n…(user prompt truncated)`;
+}
+
+function formatTechStackLines(
+  workflow?: string[],
+  task?: string[],
+): string {
+  const wf = workflow?.filter(Boolean) ?? [];
+  const tk = task?.filter(Boolean) ?? [];
+  const wLine =
+    wf.length > 0 ? `- 工作流级: ${wf.join(', ')}` : '- 工作流级: （未记录）';
+  const tLine =
+    tk.length > 0 ? `- 本子任务侧重: ${tk.join(', ')}` : '- 本子任务侧重: （未单独列出）';
+  return [wLine, tLine].join('\n');
 }
 
 function formatFileTreeLines(paths: string[]): string {
@@ -89,6 +106,9 @@ export function buildWorkerUserContent(
     `- taskId: ${input.taskId}`,
     `- 名称: ${input.taskName}`,
     `- 角色: ${input.role ?? '（未指定）'}`,
+    '',
+    '# 技术栈（Workflow 规划，供选型与依赖安装参考）',
+    formatTechStackLines(input.workflowTechStack, input.taskTechStack),
     '',
     '# 任务说明',
     input.taskDescription || '（未单独提供，见名称）',

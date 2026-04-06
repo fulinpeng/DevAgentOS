@@ -1,5 +1,7 @@
 import {
   ConflictException,
+  forwardRef,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -18,6 +20,7 @@ export type CoordinatorRunResult = {
 export class CoordinatorService {
   constructor(
     private readonly repository: CoordinatorRepository,
+    @Inject(forwardRef(() => RoleService))
     private readonly roleService: RoleService,
     private readonly taskRedis: TaskRedis,
   ) {}
@@ -44,7 +47,9 @@ export class CoordinatorService {
 
     if (children.length === 0) {
       // 已通过 PLAN_APPROVED 门禁，此处主任务不会是 COMPLETED
-      const r = await this.roleService.executeTask(parent.id);
+      const r = await this.roleService.executeTask(parent.id, {
+        chainFromCoordinator: true,
+      });
       if (r.workerPaused) {
         return { parent: r.task, executedTaskIds };
       }
@@ -71,7 +76,9 @@ export class CoordinatorService {
       if (!next) {
         break;
       }
-      const r = await this.roleService.executeTask(next.id);
+      const r = await this.roleService.executeTask(next.id, {
+        chainFromCoordinator: true,
+      });
       if (r.workerPaused) {
         break;
       }

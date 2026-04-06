@@ -180,6 +180,9 @@ export class WorkflowService {
       goal,
       description,
       projectType: auditedProjectType,
+      ...(parsedOk
+        ? { workflowTechStack: workflow!.techStack }
+        : {}),
       workflowPlannerUsed: true,
       workflowParsed: parsedOk,
     });

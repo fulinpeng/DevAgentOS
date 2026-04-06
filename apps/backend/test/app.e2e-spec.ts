@@ -68,6 +68,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
             description:
               'Login and dashboard with React; output under apps/frontend/src.',
             projectType: 'web-frontend',
+            techStack: ['react', 'typescript', 'vite'],
             tasks: [
               {
                 id: 'task_1',
@@ -76,6 +77,8 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
                   'Create layout and routing placeholders under src/ for login and dashboard routes.',
                 type: 'setup',
                 dependsOn: [],
+                role: 'frontend',
+                techStack: ['vite'],
               },
               {
                 id: 'task_2',
@@ -84,6 +87,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
                   'Implement login form and dashboard stub components with TypeScript.',
                 type: 'feature',
                 dependsOn: ['task_1'],
+                techStack: ['react'],
               },
             ],
           }),

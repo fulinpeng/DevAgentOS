@@ -1,10 +1,12 @@
 import {
   BadRequestException,
   ConflictException,
+  forwardRef,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { CoordinatorService } from '../../coordinator/application/coordinator.service';
 import { Task, TaskStatus } from '@prisma/client';
 import { TASK_STATUS_WORKER_PAUSED } from '../../../prisma/task-status';
 import { shouldRequireApproval } from '../domain/approval-policy';
@@ -19,6 +21,11 @@ import {
 } from '../infrastructure/worker.executor';
 import { RoleTaskRedis } from '../infrastructure/task.redis';
 import { RoleTaskRepository } from '../infrastructure/task.repository';
+
+/** 由 Coordinator 调用时传 chainFromCoordinator，避免子任务完成后再次嵌套 runForParent */
+export type ExecuteTaskOptions = {
+  chainFromCoordinator?: boolean;
+};
 
 export type RoleExecuteResult = {
   task: Task;
@@ -71,9 +78,14 @@ export class RoleService {
     private readonly taskRepository: RoleTaskRepository,
     private readonly taskRedis: RoleTaskRedis,
     @Inject(WORKER_EXECUTOR) private readonly workerExecutor: IWorkerExecutor,
+    @Inject(forwardRef(() => CoordinatorService))
+    private readonly coordinatorService: CoordinatorService,
   ) {}
 
-  async executeTask(taskId: string): Promise<RoleExecuteResult> {
+  async executeTask(
+    taskId: string,
+    options?: ExecuteTaskOptions,
+  ): Promise<RoleExecuteResult> {
     const task = await this.taskRepository.findById(taskId);
     if (!task) {
       throw new NotFoundException(`Task ${taskId} not found`);
@@ -263,6 +275,13 @@ export class RoleService {
       });
       await this.taskRedis.updateStatus(taskId, REDIS_COMPLETED);
       await this.taskRedis.appendLog(taskId, 'completed');
+
+      if (
+        latestForRun.parentId &&
+        !options?.chainFromCoordinator
+      ) {
+        await this.coordinatorService.runForParent(latestForRun.parentId);
+      }
 
       return { task: updated, workerResult };
     } finally {

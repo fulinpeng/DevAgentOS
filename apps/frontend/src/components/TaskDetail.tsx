@@ -272,6 +272,17 @@ export function TaskDetail() {
     ? workerPauseResult.remainingSteps.length
     : 0
 
+  const workflowTechStackFromParams = (() => {
+    const p = task.parameters
+    if (p !== null && typeof p === 'object' && !Array.isArray(p)) {
+      const w = (p as Record<string, unknown>).workflowTechStack
+      if (Array.isArray(w) && w.every((x) => typeof x === 'string')) {
+        return w as string[]
+      }
+    }
+    return null
+  })()
+
   return (
     <div>
       <nav className="breadcrumb">
@@ -425,6 +436,14 @@ export function TaskDetail() {
 
       <div className="panel">
         <h2>任务树</h2>
+        {isRoot &&
+        workflowTechStackFromParams &&
+        workflowTechStackFromParams.length > 0 ? (
+          <p className="muted" style={{ marginTop: 0 }}>
+            <strong>Workflow 技术栈（LLM 规划，供审批参考）：</strong>
+            {workflowTechStackFromParams.join(' · ')}
+          </p>
+        ) : null}
         {isRoot && children.length > 0 ? (
           <div
             className="muted"
@@ -442,6 +461,11 @@ export function TaskDetail() {
             <code>COMPLETED</code> 后才会启动下一项。因此多个子任务为{' '}
             <code>PENDING</code> 时表示<strong>在排队</strong>，并非未调度。
             若某项长期 <code>RUNNING</code>，整条链会停在该项。
+            <br />
+            <strong>手动执行子任务：</strong>对某子任务点「继续执行」或调用{' '}
+            <code>POST /role/execute/:id</code> 且该任务<strong>成功完成</strong>
+            后，后端会<strong>自动继续</strong>调用 Coordinator，按顺序跑完后续{' '}
+            <code>PENDING</code>（与先点「运行 Coordinator」再一次性跑队列等价，无需再手动多点一次）。
             <br />
             <strong>中途报错去哪看：</strong>Worker 步骤级日志（如{' '}
             <code>step_fail</code>、<code>step_success</code>）记在<strong>该子任务</strong>

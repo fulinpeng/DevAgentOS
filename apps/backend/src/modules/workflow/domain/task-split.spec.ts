@@ -4,6 +4,7 @@ import {
   parseWorkflow,
   splitTask,
   splitTaskRuleBased,
+  workflowToSubTaskSpecs,
 } from './task-split';
 
 describe('splitTaskRuleBased', () => {
@@ -154,6 +155,7 @@ describe('parseWorkflow', () => {
     goal: 'g',
     description: 'd',
     projectType: 'web-frontend',
+    techStack: ['react', 'typescript'],
     tasks: [
       {
         id: 'a',
@@ -161,6 +163,8 @@ describe('parseWorkflow', () => {
         description: 'long desc one',
         type: 'setup',
         dependsOn: [],
+        role: 'frontend',
+        techStack: ['vite'],
       },
       {
         id: 'b',
@@ -168,6 +172,7 @@ describe('parseWorkflow', () => {
         description: 'long desc two',
         type: 'feature',
         dependsOn: ['a'],
+        techStack: [],
       },
     ],
   };
@@ -175,8 +180,11 @@ describe('parseWorkflow', () => {
   it('合法 JSON 解析成功', () => {
     const w = parseWorkflow(JSON.stringify(valid));
     expect(w).not.toBeNull();
+    expect(w!.techStack).toEqual(['react', 'typescript']);
     expect(w!.tasks).toHaveLength(2);
     expect(w!.tasks[0].id).toBe('a');
+    expect(w!.tasks[0].role).toBe('frontend');
+    expect(w!.tasks[0].techStack).toEqual(['vite']);
     expect(w!.tasks[1].dependsOn).toEqual(['a']);
   });
 
@@ -238,6 +246,7 @@ describe('parseWorkflow', () => {
               description: 'd',
               type: 'setup',
               dependsOn: ['y'],
+              techStack: [],
             },
             {
               id: 'y',
@@ -245,10 +254,75 @@ describe('parseWorkflow', () => {
               description: 'd',
               type: 'feature',
               dependsOn: ['x'],
+              techStack: [],
             },
           ],
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe('workflowToSubTaskSpecs（角色推断）', () => {
+  const base = {
+    goal: 'g',
+    description: 'd',
+    techStack: ['react'] as string[],
+    tasks: [
+      {
+        id: 'a',
+        name: 'init',
+        description: 'd1',
+        type: 'setup' as const,
+        dependsOn: [] as string[],
+        techStack: [] as string[],
+      },
+      {
+        id: 'b',
+        name: 'routes',
+        description: 'd2',
+        type: 'config' as const,
+        dependsOn: ['a'],
+        techStack: [] as string[],
+      },
+    ],
+  };
+
+  it('纯前端 projectType 下 type=config 子任务为 frontend（如路由配置）', () => {
+    const specs = workflowToSubTaskSpecs(
+      { ...base, projectType: 'web-frontend' },
+      'parent',
+      { llmModel: 'qwen' },
+    );
+    expect(specs[1].role).toBe('frontend');
+    expect(specs[1].parameters.workflowTechStack).toEqual(['react']);
+    expect(specs[1].parameters.techStack).toEqual(['react']);
+  });
+
+  it('全栈 / 含 backend 语义时 type=config 仍为 backend', () => {
+    const specs = workflowToSubTaskSpecs(
+      { ...base, projectType: 'fullstack web' },
+      'parent',
+      { llmModel: 'qwen' },
+    );
+    expect(specs[1].role).toBe('backend');
+  });
+
+  it('Workflow 给出 role 时优先使用', () => {
+    const withRole = {
+      ...base,
+      projectType: 'fullstack web',
+      tasks: [
+        { ...base.tasks[0] },
+        {
+          ...base.tasks[1],
+          role: 'general' as const,
+        },
+      ],
+    };
+    const specs = workflowToSubTaskSpecs(withRole, 'parent', {
+      llmModel: 'qwen',
+    });
+    expect(specs[1].role).toBe('general');
   });
 });

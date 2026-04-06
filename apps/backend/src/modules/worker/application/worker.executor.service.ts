@@ -156,6 +156,27 @@ function extractTaskContext(task: WorkerExecuteInput): {
   return { taskDescription: task.name, goal: task.name };
 }
 
+function extractTechStacks(task: WorkerExecuteInput): {
+  workflowTechStack: string[];
+  taskTechStack: string[];
+} {
+  const p = task.parameters;
+  if (p !== null && typeof p === 'object' && !Array.isArray(p)) {
+    const r = p as Record<string, unknown>;
+    const wf = r.workflowTechStack;
+    const tk = r.taskTechStack;
+    const asStrings = (v: unknown): string[] =>
+      Array.isArray(v) && v.every((x) => typeof x === 'string')
+        ? (v as string[])
+        : [];
+    return {
+      workflowTechStack: asStrings(wf),
+      taskTechStack: asStrings(tk),
+    };
+  }
+  return { workflowTechStack: [], taskTechStack: [] };
+}
+
 @Injectable()
 export class WorkerExecutorService implements IWorkerExecutor {
   private readonly logger = new Logger(WorkerExecutorService.name);
@@ -263,6 +284,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
     );
 
     const { taskDescription, goal } = extractTaskContext(task);
+    const { workflowTechStack, taskTechStack } = extractTechStacks(task);
 
     const user = buildWorkerUserContent({
       taskId: task.id,
@@ -270,6 +292,8 @@ export class WorkerExecutorService implements IWorkerExecutor {
       taskDescription,
       goal,
       role: task.role,
+      workflowTechStack,
+      taskTechStack,
       outputDirRelative: rel,
       fileTreeDeep: deepFileTree,
       importantFiles,

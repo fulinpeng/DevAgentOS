@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { CoordinatorModule } from '../coordinator/coordinator.module';
 import { WorkerExecutorService } from '../worker/application/worker.executor.service';
 import { WorkerModule } from '../worker/worker.module';
 import { RoleService } from './application/role.service';
@@ -8,7 +9,7 @@ import { RoleTaskRedis } from './infrastructure/task.redis';
 import { RoleTaskRepository } from './infrastructure/task.repository';
 
 @Module({
-  imports: [WorkerModule],
+  imports: [WorkerModule, forwardRef(() => CoordinatorModule)],
   controllers: [RoleController],
   providers: [
     RoleService,

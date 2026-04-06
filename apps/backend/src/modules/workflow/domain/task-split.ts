@@ -203,18 +203,34 @@ const TASK_NODE_TYPES = new Set<TaskNodeType>([
   'refactor',
 ]);
 
+/** 由 Workflow LLM 为子任务标注；缺省时由 inferRoleFromWorkflow 推断 */
+export type WorkflowRole = 'frontend' | 'backend' | 'data' | 'general';
+
+const WORKFLOW_ROLES = new Set<WorkflowRole>([
+  'frontend',
+  'backend',
+  'data',
+  'general',
+]);
+
 export type WorkflowTaskNode = {
   id: string;
   name: string;
   description: string;
   type: TaskNodeType;
   dependsOn: string[];
+  /** 可选；未给出时由系统按 projectType/type 推断 */
+  role?: WorkflowRole;
+  /** 本子任务侧重的技术栈（可选；可与顶层 techStack 合并展示） */
+  techStack: string[];
 };
 
 export type Workflow = {
   goal: string;
   description: string;
   projectType: string;
+  /** 工作流级技术栈，由 Workflow LLM 生成，供审核与 Worker 上下文 */
+  techStack: string[];
   tasks: WorkflowTaskNode[];
 };
 
@@ -228,6 +244,40 @@ function isTaskNodeType(v: unknown): v is TaskNodeType {
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+/** 缺省或 undefined → []；非法类型 → null */
+function parseWorkflowStringArray(v: unknown): string[] | null {
+  if (v === undefined) {
+    return [];
+  }
+  if (!Array.isArray(v)) {
+    return null;
+  }
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== 'string' || !x.trim()) {
+      return null;
+    }
+    out.push(x.trim());
+  }
+  return out;
+}
+
+function parseOptionalWorkflowRole(
+  v: unknown,
+): WorkflowRole | undefined | null {
+  if (v === undefined) {
+    return undefined;
+  }
+  if (typeof v !== 'string') {
+    return null;
+  }
+  const r = v.trim().toLowerCase() as WorkflowRole;
+  if (!WORKFLOW_ROLES.has(r)) {
+    return null;
+  }
+  return r;
 }
 
 /**
@@ -268,6 +318,11 @@ export function parseWorkflow(raw: string): Workflow | null {
     return null;
   }
 
+  const workflowTechStack = parseWorkflowStringArray(o.techStack);
+  if (workflowTechStack === null) {
+    return null;
+  }
+
   const tasks: WorkflowTaskNode[] = [];
   let hasDependencyEdge = false;
 
@@ -294,12 +349,22 @@ export function parseWorkflow(raw: string): Workflow | null {
     if (t.dependsOn.length > 0) {
       hasDependencyEdge = true;
     }
+    const taskStack = parseWorkflowStringArray(t.techStack);
+    if (taskStack === null) {
+      return null;
+    }
+    const parsedRole = parseOptionalWorkflowRole(t.role);
+    if (parsedRole === null) {
+      return null;
+    }
     tasks.push({
       id: t.id.trim(),
       name: t.name.trim(),
       description: t.description.trim(),
       type: t.type,
       dependsOn: t.dependsOn.map((d) => d.trim()).filter(Boolean),
+      ...(parsedRole !== undefined && { role: parsedRole }),
+      techStack: taskStack,
     });
   }
 
@@ -328,6 +393,7 @@ export function parseWorkflow(raw: string): Workflow | null {
     goal: (o.goal as string).trim(),
     description: (o.description as string).trim(),
     projectType: (o.projectType as string).trim() || 'unknown',
+    techStack: workflowTechStack,
     tasks: sorted,
   };
 }
@@ -385,11 +451,43 @@ export function topologicalSortWorkflowTasks(
   return out;
 }
 
+/**
+ * 由 projectType 推断是否为「偏纯前端」项目。
+ * 用于避免把「路由配置」等 type=config 的任务误标为 backend（此前一律 config→backend）。
+ */
+function isLikelyFrontendOnlyProject(projectType: string): boolean {
+  const p = projectType.toLowerCase();
+  if (
+    p.includes('backend') ||
+    p.includes('fullstack') ||
+    p.includes('full-stack') ||
+    p.includes('全栈')
+  ) {
+    return false;
+  }
+  return (
+    p.includes('前端') ||
+    p.includes('frontend') ||
+    p.includes('纯前端') ||
+    p.includes('web') ||
+    p.includes('react') ||
+    p.includes('vite') ||
+    p.includes('vue') ||
+    p.includes('spa') ||
+    p.includes('client') ||
+    p.includes('static') ||
+    p.includes('静态')
+  );
+}
+
 function inferRoleFromWorkflow(
   projectType: string,
   taskType: TaskNodeType,
 ): string {
   const p = projectType.toLowerCase();
+  if (isLikelyFrontendOnlyProject(projectType) && taskType === 'config') {
+    return 'frontend';
+  }
   if (p.includes('backend') || p.includes('node') || taskType === 'config') {
     return 'backend';
   }
@@ -397,6 +495,13 @@ function inferRoleFromWorkflow(
     return 'data';
   }
   return 'frontend';
+}
+
+function mergeTechStackForTask(
+  workflowStack: string[],
+  taskStack: string[],
+): string[] {
+  return [...new Set([...workflowStack, ...taskStack])];
 }
 
 /** Worker 仅读取 task.name：合并短标题与详细说明，便于执行侧获得完整上下文。 */
@@ -424,7 +529,8 @@ export function workflowToSubTaskSpecs(
     options.promptVersion ?? WORKFLOW_PLANNER_PROMPT_VERSION;
   return workflow.tasks.map((node, i) => ({
     name: combineTaskDisplayNameForWorker(node.name, node.description),
-    role: inferRoleFromWorkflow(workflow.projectType, node.type),
+    role:
+      node.role ?? inferRoleFromWorkflow(workflow.projectType, node.type),
     order: i,
     parameters: {
       source: 'llm',
@@ -438,6 +544,9 @@ export function workflowToSubTaskSpecs(
       workflowGoal: workflow.goal,
       workflowDescription: workflow.description,
       projectType: workflow.projectType,
+      workflowTechStack: workflow.techStack,
+      taskTechStack: node.techStack,
+      techStack: mergeTechStackForTask(workflow.techStack, node.techStack),
       type: node.type,
       dependsOn: node.dependsOn,
     },
@@ -474,6 +583,9 @@ export function buildFallbackSubTaskSpecs(
         workflowGoal: goal,
         workflowDescription: description,
         projectType: pt,
+        workflowTechStack: [] as string[],
+        taskTechStack: [] as string[],
+        techStack: [] as string[],
         type: 'setup',
         dependsOn: [] as string[],
       },
@@ -498,6 +610,9 @@ export function buildFallbackSubTaskSpecs(
         workflowGoal: goal,
         workflowDescription: description,
         projectType: pt,
+        workflowTechStack: [] as string[],
+        taskTechStack: [] as string[],
+        techStack: [] as string[],
         type: 'feature',
         dependsOn: ['fallback_1'],
       },
