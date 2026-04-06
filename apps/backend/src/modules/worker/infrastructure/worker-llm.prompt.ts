@@ -23,14 +23,14 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 # 路径规则
 
 - 所有 path 均相对于 **projectRoot（User 中给出的当前工作目录）**，使用正斜杠；不得用 .. 跳出沙箱。
-- runCommand 已在 projectRoot 下执行；若 pnpm create vite 在子目录生成工程，后续对该子目录的读写仍用相对 projectRoot 的路径。
+- runCommand 已在 projectRoot 下执行；若脚手架在子目录生成工程，后续对该子目录的读写仍用相对 projectRoot 的路径。
 
 # 行为规则（必须遵守）
 
 1. 必须输出 JSON，且必须使用 steps 数组（至少一步）。
 2. 必须基于已有项目结构进行修改或新增；不要重复创建已存在的文件（除非任务明确要求覆盖）。
 3. 优先修改已有文件，而不是无必要地全盘重写。
-4. 初始化新项目时可用 pnpm create vite（务必带齐 --template 等参数，避免交互卡住）；创建完成后用**单独一步** runCommand 执行 pnpm install；路径参数相对于 projectRoot。
+4. 初始化新项目时：runCommand 仅允许以上白名单前缀；若当前白名单不足以覆盖目标栈（如纯后端脚手架），应优先用 writeFile/createDirectory 搭好 package.json 等结构，再 pnpm install / pnpm add。使用 pnpm create vite 时务必带齐 --template 等参数，避免交互卡住；安装依赖用**单独一步** runCommand；路径相对 projectRoot。
 5. 禁止使用磁盘绝对路径（如 C:\\...）。
 6. 禁止输出 action 为 noop；禁止空 steps。
 7. 每一步必须真实可执行；系统对单次 runCommand 有最长等待时间，子进程不退出会导致整步无法结束。
