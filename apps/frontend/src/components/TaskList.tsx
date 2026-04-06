@@ -42,6 +42,7 @@ export function TaskList() {
       <p className="muted" style={{ marginBottom: '0.75rem' }}>
         本页只显示<strong>根任务</strong>（<code>parentId</code> 为空）。拆计划产生的
         <strong>子任务</strong>不会单独占一行，请点进对应主任务的详情查看任务树。
+        <strong>已完成</strong>的任务可<strong>微调</strong>；追加任务可在详情页任务树下操作。
       </p>
       <table className="data-table">
         <thead>
@@ -80,6 +81,14 @@ export function TaskList() {
                 <td>{new Date(r.createdAt).toLocaleString()}</td>
                 <td>
                   <Link to={`/task/${r.id}`}>详情</Link>
+                  {' · '}
+                  {r.status === 'COMPLETED' ? (
+                    <Link to={`/task/${r.id}?refine=1`}>微调</Link>
+                  ) : (
+                    <span className="muted" title="仅已完成任务可微调">
+                      微调
+                    </span>
+                  )}
                   {r.status === 'CREATED' ? (
                     <>
                       {' · '}

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useLocation, useParams } from 'react-router-dom'
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from 'react-router-dom'
 import { apiGet, apiPatch, apiPost } from '../api/client'
 import type {
   GeneratePlanResponse,
@@ -8,6 +14,9 @@ import type {
 } from '../types/task'
 import { RiskBadge } from './RiskBadge'
 import { TaskLogs } from './TaskLogs'
+import { TaskAppendModal } from './TaskAppendModal'
+import { TaskEditModal } from './TaskEditModal'
+import { TaskRefinementModal } from './TaskRefinementModal'
 
 function getDescriptionPreview(params: unknown): string | undefined {
   if (params && typeof params === 'object' && 'description' in params) {
@@ -17,6 +26,26 @@ function getDescriptionPreview(params: unknown): string | undefined {
     }
   }
   return undefined
+}
+
+/** 仅 COMPLETED 可微调 */
+function canRefineTask(task: TaskNode): boolean {
+  return task.status === 'COMPLETED'
+}
+
+/** 追加子任务：根任务须已生成计划（有子任务或状态已离开 CREATED）；子任务任意 */
+function canAppendChildTask(task: TaskNode, children: TaskNode[]): boolean {
+  if (task.parentId !== null) {
+    return true
+  }
+  if (children.length > 0) {
+    return true
+  }
+  return task.status !== 'CREATED'
+}
+
+function taskEditableBeforeRun(status: string): boolean {
+  return !['RUNNING', 'COMPLETED', 'FAILED', 'WORKER_PAUSED'].includes(status)
 }
 
 function TaskRow({
@@ -70,6 +99,8 @@ function TaskRow({
 
 export function TaskDetail() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   const splitHintFromNav = (location.state as { splitHint?: string } | null)
     ?.splitHint
@@ -80,6 +111,9 @@ export function TaskDetail() {
   const [err, setErr] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [refineModalOpen, setRefineModalOpen] = useState(false)
+  const [editModalOpen, setEditModalOpen] = useState(false)
+  const [appendModalOpen, setAppendModalOpen] = useState(false)
 
   const splitHintBanner =
     splitHintFromGenerate ?? splitHintFromNav ?? undefined
@@ -88,6 +122,13 @@ export function TaskDetail() {
     if (!id) return Promise.resolve()
     return apiGet<TaskDetailResponse>(`/task/${id}`).then(setData)
   }, [id])
+
+  useEffect(() => {
+    if (searchParams.get('refine') === '1') {
+      setRefineModalOpen(true)
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     if (!id) return
@@ -283,10 +324,45 @@ export function TaskDetail() {
     return null
   })()
 
+  const canRefine = canRefineTask(task)
+  const canAppend = canAppendChildTask(task, children)
+  const canEdit = taskEditableBeforeRun(task.status)
+
   return (
     <div>
-      <nav className="breadcrumb">
+      <nav
+        className="breadcrumb"
+        style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}
+      >
         <Link to="/">← 列表</Link>
+        {canRefine ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ fontSize: '0.85rem' }}
+            onClick={() => setRefineModalOpen(true)}
+          >
+            任务微调
+          </button>
+        ) : (
+          <span
+            className="muted"
+            style={{ fontSize: '0.85rem' }}
+            title="仅已完成任务可微调"
+          >
+            微调
+          </span>
+        )}
+        {canEdit ? (
+          <button
+            type="button"
+            className="btn"
+            style={{ fontSize: '0.85rem' }}
+            onClick={() => setEditModalOpen(true)}
+          >
+            编辑
+          </button>
+        ) : null}
       </nav>
 
       {splitHintBanner ? (
@@ -355,8 +431,15 @@ export function TaskDetail() {
           <h2>计划（Plan）</h2>
           {task.status === 'CREATED' ? (
             <p className="muted" style={{ marginTop: 0 }}>
-              <Link to={`/task/${task.id}/edit`}>编辑草稿</Link>
-              （名称、goal、description、projectType、outputDir）
+              <button
+                type="button"
+                className="btn"
+                style={{ fontSize: '0.88rem' }}
+                onClick={() => setEditModalOpen(true)}
+              >
+                编辑草稿
+              </button>
+              （名称与 parameters JSON，含 description / outputDir 等）
             </p>
           ) : null}
           <p className="muted">
@@ -373,7 +456,14 @@ export function TaskDetail() {
               <>
                 {' '}
                 · 未填写 parameters.description，请先
-                <Link to={`/task/${task.id}/edit`}> 编辑任务草稿 </Link>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: '0.88rem', marginLeft: 4 }}
+                  onClick={() => setEditModalOpen(true)}
+                >
+                  编辑任务草稿
+                </button>
                 补充自然语言需求后再生成计划
               </>
             )}
@@ -541,7 +631,56 @@ export function TaskDetail() {
             ))}
           </tbody>
         </table>
+        {canAppend ? (
+          <div
+            style={{
+              marginTop: '1rem',
+              paddingTop: '0.75rem',
+              borderTop: '1px solid #e5e5e5',
+            }}
+          >
+            <h3 style={{ fontSize: '1rem', margin: '0 0 0.5rem' }}>追加任务</h3>
+            <p className="muted" style={{ fontSize: '0.88rem', marginBottom: 8 }}>
+              在工作流中<strong>新增一条子任务</strong>并尝试执行（与「任务微调」里按版本追加类似，此处为手动填写）。
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: '0.88rem' }}
+              onClick={() => setAppendModalOpen(true)}
+            >
+              打开追加任务
+            </button>
+          </div>
+        ) : (
+          <p className="muted" style={{ marginTop: '0.75rem', fontSize: '0.88rem' }}>
+            请先生成工作流计划后，可使用「追加任务」。
+          </p>
+        )}
       </div>
+
+      <TaskEditModal
+        open={editModalOpen}
+        onClose={() => setEditModalOpen(false)}
+        task={data.task}
+        onSaved={(d) => setData(d)}
+      />
+
+      <TaskAppendModal
+        open={appendModalOpen}
+        onClose={() => setAppendModalOpen(false)}
+        sourceTaskId={id}
+        defaultRole={task.role}
+        onReload={reload}
+        onDone={(newId) => navigate(`/task/${newId}`)}
+      />
+
+      <TaskRefinementModal
+        open={refineModalOpen}
+        onClose={() => setRefineModalOpen(false)}
+        taskId={id}
+        onReloadParent={reload}
+      />
 
       <TaskLogs
         taskId={id}

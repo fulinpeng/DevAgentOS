@@ -11,6 +11,11 @@ export const TASK_REFINEMENT_SYSTEM_PROMPT = `你是一个任务优化专家。
 3. 根据用户指令优化任务的可执行说明与参数
 4. 只输出一个 JSON 对象，不要 markdown 代码块，不要解释性文字
 
+关于任务状态：
+
+- 原任务 JSON 中的 status 可能为 COMPLETED、FAILED、RUNNING 等任意值；均视为「在既有事实与参数基础上做增量优化」。
+- 若任务已结束（如 COMPLETED），仍应保留原交付意图与结果描述，除非用户指令明确要求改为复盘/归档/补充说明类调整；不要仅因「已完成」就否定或清空历史内容。
+
 硬约束：
 
 - 不允许删除或改写任务名称（name）；输出中不要包含 name 字段。

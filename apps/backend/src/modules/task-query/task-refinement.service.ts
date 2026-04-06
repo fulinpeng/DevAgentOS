@@ -4,8 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { TaskRedis } from '../../infrastructure/redis/task.redis';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RoleService } from '../role/application/role.service';
+import { TaskQueryService } from './task-query.service';
 import { WorkflowLlmService } from '../workflow/infrastructure/llm.service';
+import { assertCompletedForRefine } from './domain/task-refinement-gate';
 import {
   type RefinementPayload,
   parseRefinementLlmOutput,
@@ -46,7 +50,8 @@ function mergeParametersIntoTask(
     !Array.isArray(current)
       ? { ...(current as Record<string, unknown>) }
       : {};
-  const { role: _dropRole, name: _dropName, ...restParams } = payload.parameters;
+  const { role: _dropRole, name: _dropName, ...restParams } =
+    payload.parameters;
   return {
     ...base,
     ...restParams,
@@ -60,7 +65,25 @@ export class TaskRefinementService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly workflowLlm: WorkflowLlmService,
+    private readonly roleService: RoleService,
+    private readonly taskRedis: TaskRedis,
+    private readonly taskQueryService: TaskQueryService,
   ) {}
+
+  /**
+   * 列出某任务的全部微调版本（新版本号在前）。
+   */
+  async listVersions(taskId: string) {
+    const task = await this.prisma.task.findUnique({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+    assertCompletedForRefine(task);
+    return this.prisma.taskVersion.findMany({
+      where: { taskId },
+      orderBy: { version: 'desc' },
+    });
+  }
 
   /**
    * 基于当前任务与指令生成新版本草稿（isActive=false）。
@@ -70,6 +93,7 @@ export class TaskRefinementService {
     if (!task) {
       throw new NotFoundException(`Task ${taskId} not found`);
     }
+    assertCompletedForRefine(task);
 
     const taskJson = JSON.stringify(
       taskSnapshotForPrompt(task),
@@ -116,16 +140,17 @@ export class TaskRefinementService {
       throw new NotFoundException(`TaskVersion ${versionId} not found`);
     }
 
-    const payload = refinePayloadFromValue(ver.data);
-    if (!payload) {
-      throw new BadRequestException('该版本 data 结构无效，无法激活');
-    }
-
     const task = await this.prisma.task.findUnique({
       where: { id: ver.taskId },
     });
     if (!task) {
       throw new NotFoundException(`Task ${ver.taskId} not found`);
+    }
+    assertCompletedForRefine(task);
+
+    const payload = refinePayloadFromValue(ver.data);
+    if (!payload) {
+      throw new BadRequestException('该版本 data 结构无效，无法激活');
     }
 
     const merged = mergeParametersIntoTask(task.parameters, payload);
@@ -148,5 +173,55 @@ export class TaskRefinementService {
     return this.prisma.taskVersion.findUniqueOrThrow({
       where: { id: versionId },
     });
+  }
+
+  /**
+   * 微调后执行：先在本任务上置为 PENDING 并清空 result（与新增任务不同），再对同一 taskId 调用 Role，
+   * 执行日志仍追加在当前任务的 Redis 键下。
+   */
+  async executeRefinementAsRerunOnSameTask(taskId: string, versionId?: string) {
+    const source = await this.prisma.task.findUnique({
+      where: { id: taskId },
+    });
+    if (!source) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+    assertCompletedForRefine(source);
+    await this.resolveVersionForExecute(taskId, versionId);
+
+    await this.taskQueryService.prepareTaskForRerunAfterRefinement(taskId);
+
+    const execResult = await this.roleService.executeTask(taskId);
+
+    return {
+      task: {
+        id: execResult.task.id,
+        name: execResult.task.name,
+        status: execResult.task.status,
+      },
+      workerResult: execResult.workerResult,
+      idempotent: execResult.idempotent,
+      pausedForApproval: execResult.pausedForApproval,
+      workerPaused: execResult.workerPaused,
+    };
+  }
+
+  private async resolveVersionForExecute(taskId: string, versionId?: string) {
+    if (versionId) {
+      const v = await this.prisma.taskVersion.findFirst({
+        where: { id: versionId, taskId },
+      });
+      if (!v) {
+        throw new NotFoundException(`TaskVersion ${versionId} not found`);
+      }
+      return v;
+    }
+    const active = await this.prisma.taskVersion.findFirst({
+      where: { taskId, isActive: true },
+    });
+    if (!active) {
+      throw new BadRequestException('请先激活某一微调版本，再执行重跑');
+    }
+    return active;
   }
 }

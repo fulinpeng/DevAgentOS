@@ -57,3 +57,31 @@ export type PendingPlanApprovalRow = {
   status: string
   children: TaskNode[]
 }
+
+/** GET /task/:taskId/versions — 任务微调草稿 */
+export type TaskVersionRow = {
+  id: string
+  taskId: string
+  version: number
+  data: unknown
+  isActive: boolean
+  createdAt: string
+}
+
+/** POST /task/refine/:taskId/execute — 同任务重跑（先置 PENDING 再 Role） */
+export type ExecuteRefinementResponse = {
+  task: { id: string; name: string; status: string }
+  workerResult: { success: boolean; result: Record<string, unknown> }
+  idempotent?: boolean
+  pausedForApproval?: boolean
+  workerPaused?: boolean
+}
+
+/** POST /task/:id/append — 新建子任务并执行 */
+export type AppendTaskResponse = {
+  newTask: { id: string; name: string; status: string }
+  workerResult: { success: boolean; result: Record<string, unknown> }
+  idempotent?: boolean
+  pausedForApproval?: boolean
+  workerPaused?: boolean
+}

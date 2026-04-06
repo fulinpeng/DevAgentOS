@@ -37,13 +37,11 @@ export function EditTask() {
       .then((d) => {
         if (cancelled) return
         const { task } = d
-        if (task.parentId !== null) {
-          setMetaErr('仅主任务可编辑草稿')
-          setLoading(false)
-          return
-        }
-        if (task.status !== 'CREATED') {
-          setMetaErr(`当前状态为 ${task.status}，仅 CREATED 可编辑`)
+        const blocked = ['RUNNING', 'COMPLETED', 'FAILED', 'WORKER_PAUSED']
+        if (blocked.includes(task.status)) {
+          setMetaErr(
+            `当前状态为 ${task.status}，仅未开始执行的任务可编辑（全页草稿编辑）`,
+          )
           setLoading(false)
           return
         }
@@ -135,8 +133,8 @@ export function EditTask() {
       <div className="panel">
         <h2>编辑任务草稿</h2>
         <p className="muted">
-          仅 <code>CREATED</code> 主任务可改名称、goal、description、projectType 与 outputDir；保存后写入
-          parameters。
+          未开始执行的任务可改名称与 parameters（goal、description、projectType、outputDir
+          等）。详情页亦可用弹框编辑 JSON。
         </p>
 
         <form className="new-task-form" onSubmit={(e) => void onSubmit(e)}>
