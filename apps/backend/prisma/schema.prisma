@@ -24,17 +24,32 @@ enum TaskStatus {
 }
 
 model Task {
-  id         String     @id @default(uuid())
+  id         String         @id @default(uuid())
   parentId   String?
-  parent     Task?      @relation("TaskTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children   Task[]     @relation("TaskTree")
+  parent     Task?          @relation("TaskTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children   Task[]         @relation("TaskTree")
   name       String
-  status     TaskStatus @default(CREATED)
+  status     TaskStatus     @default(CREATED)
   role       String?
   /// 同级排序，对应库列名 order（Prisma 字段名用 sortOrder 避免与 orderBy 语义混淆）
-  sortOrder  Int        @default(0) @map("order")
+  sortOrder  Int            @default(0) @map("order")
   parameters Json?
   result     Json?
-  createdAt  DateTime   @default(now())
-  updatedAt  DateTime   @updatedAt
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  versions   TaskVersion[]
+}
+
+/// 任务微调草稿版本；激活后写回 Task.parameters 等（不增删 Task 列）
+model TaskVersion {
+  id        String   @id @default(uuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  version   Int
+  data      Json
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([taskId, version])
+  @@index([taskId])
 }
