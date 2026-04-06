@@ -62,8 +62,19 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .useValue(mock)
       .overrideProvider(WorkflowLlmService)
       .useValue({
-        tryCallSplitTaskJson: async () => null as string | null,
-        callLLM: async () => '{"action":"noop","args":{}}',
+        callSplitTaskJson: async () =>
+          JSON.stringify([
+            { name: 'build login page', role: 'frontend' },
+            { name: 'build dashboard page', role: 'frontend' },
+          ]),
+        callLLM: async () =>
+          JSON.stringify({
+            action: 'writeFile',
+            args: {
+              path: 'e2e-smoke.txt',
+              content: '// e2e smoke\n',
+            },
+          }),
       })
       .compile();
 
@@ -188,7 +199,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
 
     expect(execRes.body.workerResult.success).toBe(true);
     expect(execRes.body.workerResult.result).toMatchObject({
-      action: 'noop',
+      action: 'writeFile',
     });
     expect(execRes.body.task.status).toBe('COMPLETED');
     expect(redisStore.get(`task:${subId}`)).toBe('completed');

@@ -21,7 +21,7 @@ function getDashScopeApiKey(config: ConfigService): string {
 
 /**
  * Workflow 专用 LLM 网关：DashScope OpenAI 兼容接口，只负责文本补全，不执行业务。
- * 失败路径由 {@link tryCallSplitTaskJson} 吞掉并走领域规则 fallback。
+ * 拆任务须调用 {@link callSplitTaskJson}；不再提供「无 LLM 时规则拆分」。
  */
 @Injectable()
 export class WorkflowLlmService {
@@ -107,28 +107,4 @@ export class WorkflowLlmService {
     return this.callLLM(SPLIT_TASK_SYSTEM_PROMPT, user);
   }
 
-  /** 尝试调用；失败时记录日志并返回 null，供上层 fallback。 */
-  async tryCallSplitTaskJson(
-    name: string,
-    features: string[],
-  ): Promise<string | null> {
-    const apiKey = getDashScopeApiKey(this.config);
-    if (!apiKey) {
-      this.logger.log(
-        'LLM 未调用（未配置 DASHSCOPE_API_KEY / QWEN_API_KEY），拆任务将走规则 fallback',
-      );
-      return null;
-    }
-    try {
-      const out = await this.callSplitTaskJson(name, features);
-      this.logger.log(
-        `LLM 拆任务已接入：收到模型响应，长度=${out.trim().length}`,
-      );
-      return out;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.logger.warn(`LLM split failed, will use rule fallback: ${msg}`);
-      return null;
-    }
-  }
 }

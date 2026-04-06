@@ -64,7 +64,7 @@ function nameAnchoredToFeatures(
 }
 
 /**
- * 将 LLM 原始输出解析为子任务；不合法则返回 null（触发规则 fallback）。
+ * 将 LLM 原始输出解析为子任务；不合法则返回 null。
  */
 export function aiSplitTask(
   llmResponseText: string,
@@ -158,7 +158,7 @@ export function splitTaskRuleBased(task: WorkflowSplitInput): SubTaskSpec[] {
 }
 
 /**
- * 优先使用 LLM 结构化结果；失败或无 features 时走规则或无子任务。
+ * 仅从 LLM 原始文本解析子任务；解析失败则返回空数组（不再使用规则拆分）。
  */
 export function splitTask(
   task: WorkflowSplitInput,
@@ -172,17 +172,15 @@ export function splitTask(
 
   const featureTokens = features.map((f) => f.trim()).filter(Boolean);
 
-  if (llmResponseText != null && llmResponseText.trim() !== '') {
-    const fromAi = aiSplitTask(llmResponseText, task.name, {
-      ...options,
-      featureTokens,
-    });
-    if (fromAi !== null && fromAi.length > 0) {
-      return fromAi;
-    }
+  if (llmResponseText == null || llmResponseText.trim() === '') {
+    return [];
   }
 
-  return splitTaskRuleBased(task);
+  const fromAi = aiSplitTask(llmResponseText, task.name, {
+    ...options,
+    featureTokens,
+  });
+  return fromAi ?? [];
 }
 
 export { WORKFLOW_SPLIT_PROMPT_VERSION } from './task-split.constants';

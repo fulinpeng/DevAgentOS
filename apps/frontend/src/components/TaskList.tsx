@@ -37,6 +37,10 @@ export function TaskList() {
         <Link to="/pending-approval">待审批队列 →</Link>
       </nav>
       <h2>任务列表（主任务）</h2>
+      <p className="muted" style={{ marginBottom: '0.75rem' }}>
+        本页只显示<strong>根任务</strong>（<code>parentId</code> 为空）。拆计划产生的
+        <strong>子任务</strong>不会单独占一行，请点进对应主任务的详情查看任务树。
+      </p>
       <table className="data-table">
         <thead>
           <tr>
@@ -51,7 +55,16 @@ export function TaskList() {
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={6}>暂无数据</td>
+              <td colSpan={6}>
+                <p style={{ margin: 0 }}>暂无主任务。</p>
+                <p className="muted" style={{ margin: '0.5rem 0 0' }}>
+                  若你在数据库里能看到多条 <code>Task</code>，请确认其中有几条{' '}
+                  <code>parentId IS NULL</code>
+                  ——只有它们会出现在这里；其余是子任务。若根任务应为 0 条却仍显示异常，请核对前端{' '}
+                  <code>VITE_API_BASE</code> 与后端是否为同一实例、是否指向同一份{' '}
+                  <code>dev.db</code>。
+                </p>
+              </td>
             </tr>
           ) : (
             rows.map((r) => (

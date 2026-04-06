@@ -51,7 +51,7 @@ export class WorkflowService {
   }
 
   /**
-   * Step2：对 CREATED 主任务调用 AI/规则拆分，生成子任务并冻结为待审计划。
+   * Step2：对 CREATED 主任务调用 LLM 拆分，生成子任务并冻结为待审计划。
    */
   async generatePlan(parentId: string): Promise<CreateTaskResult> {
     const parent = await this.taskRepository.findById(parentId);
@@ -92,8 +92,15 @@ export class WorkflowService {
       );
     }
 
-    let llmRaw: string | null = null;
-    llmRaw = await this.llmService.tryCallSplitTaskJson(name, featureList);
+    let llmRaw: string;
+    try {
+      llmRaw = await this.llmService.callSplitTaskJson(name, featureList);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new BadRequestException(
+        `生成计划必须成功调用 LLM：${msg}。请配置 DASHSCOPE_API_KEY（或 QWEN_API_KEY），并检查 LLM_BASE_URL 与网络。`,
+      );
+    }
 
     const llmModel = this.config.get<string>('LLM_MODEL', 'qwen-turbo');
     const subSpecs = splitTask({ name, parameters }, llmRaw, {
@@ -102,7 +109,7 @@ export class WorkflowService {
     });
     if (subSpecs.length === 0) {
       throw new BadRequestException(
-        '未能生成任何子任务，请检查 features 或稍后重试',
+        'LLM 返回无法解析为合法子任务列表（或子任务未通过校验）。请调整 features / 重试生成计划。',
       );
     }
 

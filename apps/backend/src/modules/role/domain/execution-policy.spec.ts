@@ -34,6 +34,18 @@ describe('routeRoleExecution', () => {
       'blocked_plan',
     );
   });
+
+  it('PLAN_GENERATED → blocked_plan', () => {
+    expect(routeRoleExecution({ status: 'PLAN_GENERATED' })).toBe(
+      'blocked_plan',
+    );
+  });
+
+  it('PLAN_APPROVED → blocked_plan（由 Coordinator 驱动，不经 Role 直跑主任务）', () => {
+    expect(routeRoleExecution({ status: 'PLAN_APPROVED' })).toBe(
+      'blocked_plan',
+    );
+  });
 });
 
 describe('decideExecution', () => {

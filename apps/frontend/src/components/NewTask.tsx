@@ -65,7 +65,7 @@ export function NewTask() {
         <h2>新建任务</h2>
         <p className="muted">
           仅创建需求（CREATED）。生成子任务请点击详情页「生成计划」；填写 features 后生成时会走
-          LLM/规则拆分（需 DASHSCOPE_API_KEY）。
+          LLM 拆分（需 DASHSCOPE_API_KEY）。
         </p>
 
         <form className="new-task-form" onSubmit={(e) => void onSubmit(e)}>

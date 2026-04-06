@@ -51,7 +51,8 @@ export function routeRoleExecution(
   if (
     task.status === 'CREATED' ||
     task.status === 'PLAN_GENERATED' ||
-    task.status === 'WAITING_PLAN_APPROVAL'
+    task.status === 'WAITING_PLAN_APPROVAL' ||
+    task.status === 'PLAN_APPROVED'
   ) {
     return 'blocked_plan';
   }

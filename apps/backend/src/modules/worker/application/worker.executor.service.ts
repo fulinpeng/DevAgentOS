@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { clipLlmRawForRedis } from '../../../infrastructure/llm-log-meta';
@@ -15,10 +17,11 @@ import {
   toAbsoluteSandbox,
 } from '../infrastructure/resolve-output-dir';
 import {
-  buildWorkerUserPayload,
+  buildWorkerUserContent,
   WORKER_TOOL_SYSTEM_PROMPT,
 } from '../infrastructure/worker-llm.prompt';
 import { ToolExecutor } from '../tool/tool-executor';
+import { normalizeAction } from '../tool/action-normalize';
 
 function getDashScopeApiKey(config: ConfigService): string {
   return (
@@ -39,7 +42,9 @@ function parseWorkerActionJson(text: string): {
     const o = JSON.parse(raw) as unknown;
     if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
     const r = o as Record<string, unknown>;
-    const action = String(r.action ?? 'noop');
+    if (r.action === undefined || r.action === null) return null;
+    const action = String(r.action).trim();
+    if (!action) return null;
     const args =
       r.args && typeof r.args === 'object' && !Array.isArray(r.args)
         ? (r.args as Record<string, unknown>)
@@ -97,11 +102,54 @@ export class WorkerExecutorService implements IWorkerExecutor {
       action = 'noop';
       args = {};
     } else {
-      this.logger.log(`Worker LLM 将调用：taskId=${task.id}`);
-      const user = buildWorkerUserPayload({
-        id: task.id,
-        name: task.name,
+      if (!existsSync(baseDir)) {
+        try {
+          await mkdir(baseDir, { recursive: true });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return {
+            success: false,
+            result: { error: `worker_sandbox_mkdir_failed: ${msg}` },
+          };
+        }
+      }
+
+      const listRes = await this.toolExecutor.execute(
+        'listFiles',
+        { path: '.' },
+        baseDir,
+      );
+      const fileTree: string[] =
+        listRes.success && Array.isArray(listRes.data?.entries)
+          ? (listRes.data!.entries as string[])
+          : [];
+      if (!listRes.success) {
+        this.logger.warn(
+          `Worker 列出沙箱目录失败（将继续 LLM）：${listRes.error ?? 'unknown'}`,
+        );
+      }
+
+      await this.taskRedis.appendExecutionLog(task.id, {
+        step: 'worker_context_injected',
+        time: new Date().toISOString(),
+        meta: {
+          outputDirRelative: rel,
+          baseDir,
+          fileTree,
+          listFilesOk: listRes.success,
+        },
+      });
+
+      this.logger.log(
+        `Worker LLM 将调用：taskId=${task.id} files=${fileTree.length}`,
+      );
+
+      const user = buildWorkerUserContent({
+        taskId: task.id,
+        taskName: task.name,
         role: task.role,
+        outputDirRelative: rel,
+        fileTree,
       });
       let raw: string;
       try {
@@ -143,6 +191,29 @@ export class WorkerExecutorService implements IWorkerExecutor {
       }
       action = parsed.action;
       args = parsed.args;
+      const normalized = normalizeAction(action);
+      if (normalized === 'noop') {
+        const clipped = clipLlmRawForRedis(this.config, raw);
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'worker_llm_rejected_noop',
+          time: new Date().toISOString(),
+          meta: {
+            raw: clipped.text,
+            fileTree,
+            hint: '禁止 noop；请改用 writeFile/readFile/listFiles',
+          },
+        });
+        return {
+          success: false,
+          result: {
+            error: 'worker_llm_rejected_noop',
+            message:
+              '模型返回了 noop；当前策略要求必须产出可执行工具调用（如 writeFile）。',
+            raw: clipped.text,
+          },
+        };
+      }
+
       const clippedOk = clipLlmRawForRedis(this.config, raw);
       await this.taskRedis.appendExecutionLog(task.id, {
         step: 'worker_llm_ok',
@@ -152,6 +223,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
           raw: clippedOk.text,
           rawChars: clippedOk.totalChars,
           rawTruncated: clippedOk.truncated,
+          fileTree,
         },
       });
       this.logger.log(
