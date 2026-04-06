@@ -42,3 +42,16 @@ export function toAbsoluteSandbox(
 ): string {
   return path.resolve(workspaceRoot, outputDirRelative);
 }
+
+/**
+ * 从配置的 outputDir（相对仓库根）取**第一层路径**作为项目根。
+ * 例：`my-react-app/src` → `my-react-app`，避免文件落到 workspace 根或错误层级。
+ */
+export function deriveProjectRootRelative(outputDirRelative: string): string {
+  const normalized = outputDirRelative.replace(/\\/g, '/').trim();
+  if (!normalized) {
+    return '';
+  }
+  const segments = normalized.split('/').filter(Boolean);
+  return segments[0] ?? '';
+}

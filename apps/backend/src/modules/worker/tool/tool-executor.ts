@@ -162,11 +162,8 @@ export class ToolExecutor {
             const msg = e instanceof Error ? e.message : String(e);
             return { success: false, tool: action, error: msg };
           }
-          const cwdArg = args.cwd;
-          const resolvedCwd =
-            cwdArg !== undefined && cwdArg !== null && String(cwdArg).trim() !== ''
-              ? resolveUnderBase(baseDir, String(cwdArg))
-              : baseDir;
+          /** 与文件工具一致：始终在 projectRoot（baseDir）下执行，忽略 args.cwd */
+          const resolvedCwd = baseDir;
           try {
             const { stdout, stderr } = await execAsync(command, {
               cwd: resolvedCwd,

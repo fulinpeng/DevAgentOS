@@ -12,6 +12,7 @@ import type {
 } from '../../role/infrastructure/worker.executor';
 import { WorkflowLlmService } from '../../workflow/infrastructure/llm.service';
 import {
+  deriveProjectRootRelative,
   getWorkspaceRoot,
   resolveOutputDirRelative,
   toAbsoluteSandbox,
@@ -207,7 +208,8 @@ export class WorkerExecutorService implements IWorkerExecutor {
     }
 
     const workspaceRoot = getWorkspaceRoot(this.config);
-    const baseDir = toAbsoluteSandbox(workspaceRoot, rel);
+    const projectRootRel = deriveProjectRootRelative(rel) || rel;
+    const baseDir = toAbsoluteSandbox(workspaceRoot, projectRootRel);
 
     if (!existsSync(baseDir)) {
       try {
@@ -226,9 +228,20 @@ export class WorkerExecutorService implements IWorkerExecutor {
       await this.taskRedis.appendExecutionLog(task.id, {
         step: 'worker_resume',
         time: new Date().toISOString(),
-        meta: { stepCount: resumeSteps.length, outputDirRelative: rel },
+        meta: {
+          stepCount: resumeSteps.length,
+          output_dir_relative: rel,
+          project_root: projectRootRel,
+          cwd_used: baseDir,
+        },
       });
-      return this.runWorkerSteps(task, resumeSteps, baseDir, rel);
+      return this.runWorkerSteps(
+        task,
+        resumeSteps,
+        baseDir,
+        rel,
+        projectRootRel,
+      );
     }
 
     const apiKey = getDashScopeApiKey(this.config);
@@ -263,7 +276,9 @@ export class WorkerExecutorService implements IWorkerExecutor {
       meta: {
         files_count: deepFileTree.length,
         included_files: includedFiles,
-        outputDirRelative: rel,
+        output_dir_relative: rel,
+        project_root: projectRootRel,
+        cwd_used: baseDir,
       },
     });
 
@@ -271,8 +286,9 @@ export class WorkerExecutorService implements IWorkerExecutor {
       step: 'worker_context_injected',
       time: new Date().toISOString(),
       meta: {
-        outputDirRelative: rel,
-        baseDir,
+        output_dir_relative: rel,
+        project_root: projectRootRel,
+        cwd_used: baseDir,
         fileTree: deepFileTree,
         files_count: deepFileTree.length,
         included_files: includedFiles,
@@ -295,6 +311,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       workflowTechStack,
       taskTechStack,
       outputDirRelative: rel,
+      projectRootRelative: projectRootRel,
       fileTreeDeep: deepFileTree,
       importantFiles,
     });
@@ -378,7 +395,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       `Worker LLM 已接入：steps=${steps.length} taskId=${task.id}`,
     );
 
-    return this.runWorkerSteps(task, steps, baseDir, rel);
+    return this.runWorkerSteps(task, steps, baseDir, rel, projectRootRel);
   }
 
   private async runWorkerSteps(
@@ -386,6 +403,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
     steps: WorkerLlmStep[],
     baseDir: string,
     rel: string,
+    projectRootRel: string,
   ): Promise<WorkerExecuteOutput> {
     const stepResults: Array<{
       index: number;
@@ -401,7 +419,13 @@ export class WorkerExecutorService implements IWorkerExecutor {
       await this.taskRedis.appendExecutionLog(task.id, {
         step: 'step_start',
         time: isoTime,
-        meta: { index: i, action: step.action, args: step.args },
+        meta: {
+          index: i,
+          action: step.action,
+          args: step.args,
+          project_root: projectRootRel,
+          cwd_used: baseDir,
+        },
       });
 
       const toolResult = await this.toolExecutor.execute(
@@ -455,7 +479,9 @@ export class WorkerExecutorService implements IWorkerExecutor {
             meta: {
               index: i,
               tool: toolResult.tool,
-              outputDirRelative: rel,
+              output_dir_relative: rel,
+              project_root: projectRootRel,
+              cwd_used: baseDir,
             },
           });
           const remainingSteps = steps.slice(i).map((s) => ({

@@ -4,11 +4,12 @@
 
 export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执行 AI（Code-aware Agent）。
 
-你正在一个真实项目的沙箱目录（outputDir）内工作；必须结合「当前文件结构」与「关键文件内容」做增量修改，避免重复造轮子。
+你必须结合 User 中的「当前工作目录（projectRoot）」与「当前文件结构」「关键文件内容」做增量修改，避免重复造轮子；禁止把文件写到 workspace 根目录之外或未指明的路径。
 
 # 可用工具（每一步 action 字段填其一）
 
-1. runCommand — args: { "command": string, "cwd"?: string }
+1. runCommand — args: { "command": string }
+   - 子进程 **cwd 固定为项目根目录（projectRoot）**，由系统设置，**不要传 cwd**。
    - 仅允许命令以如下前缀开头：pnpm create vite、pnpm install、pnpm add（安全白名单；具体依赖包名须与 User 中给出的技术栈一致）
 2. writeFile — args: { "path": string, "content": string }
 3. readFile — args: { "path": string }
@@ -21,15 +22,16 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 
 # 路径规则
 
-- 除 runCommand 的 cwd 外，所有 path 均为相对于任务沙箱根目录的相对路径，使用正斜杠；不得用 .. 跳出沙箱。
+- 所有 path 均相对于 **projectRoot（User 中给出的当前工作目录）**，使用正斜杠；不得用 .. 跳出沙箱。
+- runCommand 已在 projectRoot 下执行；若 pnpm create vite 在子目录生成工程，后续对该子目录的读写仍用相对 projectRoot 的路径。
 
 # 行为规则（必须遵守）
 
 1. 必须输出 JSON，且必须使用 steps 数组（至少一步）。
 2. 必须基于已有项目结构进行修改或新增；不要重复创建已存在的文件（除非任务明确要求覆盖）。
 3. 优先修改已有文件，而不是无必要地全盘重写。
-4. 初始化新项目时可用 pnpm create vite（务必带齐 --template 等参数，避免交互卡住）；创建完成后用**单独一步** runCommand 执行 pnpm install，cwd 指向生成目录。
-5. runCommand 的 cwd 必须填**相对沙箱根**的路径（如 react-project），不要使用磁盘绝对路径（如 C:\\...）。
+4. 初始化新项目时可用 pnpm create vite（务必带齐 --template 等参数，避免交互卡住）；创建完成后用**单独一步** runCommand 执行 pnpm install；路径参数相对于 projectRoot。
+5. 禁止使用磁盘绝对路径（如 C:\\...）。
 6. 禁止输出 action 为 noop；禁止空 steps。
 7. 每一步必须真实可执行；系统对单次 runCommand 有最长等待时间，子进程不退出会导致整步无法结束。
 
@@ -47,8 +49,10 @@ export type BuildWorkerUserContentInput = {
   workflowTechStack?: string[];
   /** 子任务侧重技术栈（parameters.taskTechStack） */
   taskTechStack?: string[];
-  /** 相对仓库根的 outputDir */
+  /** 相对仓库根的 outputDir（配置原值，可能含子路径） */
   outputDirRelative: string;
+  /** 相对仓库根的项目根（第一层目录），与工具沙箱一致 */
+  projectRootRelative: string;
   /** 深度扫描得到的文件列表（最多 50） */
   fileTreeDeep: string[];
   /** 关键文件路径 -> 内容片段 */
@@ -116,8 +120,17 @@ export function buildWorkerUserContent(
     '# 项目目标',
     input.goal || input.taskName,
     '',
-    '# 可操作目录（沙箱根，相对仓库根）',
-    input.outputDirRelative,
+    '# 当前工作目录',
+    '',
+    '你正在以下目录中执行任务（相对仓库根）：',
+    '',
+    input.projectRootRelative,
+    '',
+    '所有路径必须基于该目录。',
+    '禁止在该目录之外创建文件。',
+    '',
+    '（配置中的 outputDir 可能更深，例如含子路径；系统已将沙箱与命令 cwd 统一为上述 projectRoot。）',
+    `outputDir 配置值：${input.outputDirRelative}`,
     '',
     '# 当前项目文件结构（递归扫描，已忽略 node_modules / .git / dist，最多 50 个文件）',
     formatFileTreeLines(input.fileTreeDeep),
