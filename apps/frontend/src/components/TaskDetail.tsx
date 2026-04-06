@@ -439,7 +439,7 @@ export function TaskDetail() {
               >
                 编辑草稿
               </button>
-              （名称与 parameters JSON，含 description / outputDir 等）
+              （名称与 parameters JSON，含 description / projectRoot 等）
             </p>
           ) : null}
           <p className="muted">
@@ -671,6 +671,7 @@ export function TaskDetail() {
         onClose={() => setAppendModalOpen(false)}
         sourceTaskId={id}
         defaultRole={task.role}
+        defaultParameters={task.parameters}
         onReload={reload}
         onDone={(newId) => navigate(`/task/${newId}`)}
       />

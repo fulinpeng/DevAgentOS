@@ -6,7 +6,7 @@ export type WorkerExecuteInput = {
   id: string;
   name: string;
   role: string | null;
-  /** 任务 parameters（含 outputDir 等）；子任务可继承父链上的 outputDir */
+  /** 任务 parameters（含 projectRoot 等）；子任务可继承父链上的 projectRoot（兼容旧 outputDir） */
   parameters: Record<string, unknown> | null;
   parentId: string | null;
 };

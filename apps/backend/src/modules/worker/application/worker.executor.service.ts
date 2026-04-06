@@ -12,10 +12,9 @@ import type {
 } from '../../role/infrastructure/worker.executor';
 import { WorkflowLlmService } from '../../workflow/infrastructure/llm.service';
 import {
-  deriveProjectRootRelative,
   getWorkspaceRoot,
-  resolveOutputDirRelative,
-  toAbsoluteSandbox,
+  resolveProjectRootFromTaskChain,
+  resolveWorkerBaseDir,
 } from '../infrastructure/resolve-output-dir';
 import { FileContextService } from '../infrastructure/file-context.service';
 import {
@@ -192,24 +191,26 @@ export class WorkerExecutorService implements IWorkerExecutor {
   ) {}
 
   async execute(task: WorkerExecuteInput): Promise<WorkerExecuteOutput> {
-    const rel = await resolveOutputDirRelative(
+    const projectRootRaw = await resolveProjectRootFromTaskChain(
       this.prisma,
       task.parameters,
       task.parentId,
     );
-    if (!rel) {
+    if (!projectRootRaw) {
       return {
         success: false,
         result: {
           error:
-            '未配置 outputDir：请在根任务的 parameters.outputDir 中设置相对仓库根的路径（子任务会继承父任务）。',
+            '未配置 projectRoot：请在根任务的 parameters.projectRoot 中设置项目根目录（相对仓库根或本机绝对路径；子任务会继承父任务）。旧字段 outputDir 仍兼容。',
         },
       };
     }
 
     const workspaceRoot = getWorkspaceRoot(this.config);
-    const projectRootRel = deriveProjectRootRelative(rel) || rel;
-    const baseDir = toAbsoluteSandbox(workspaceRoot, projectRootRel);
+    const { baseDir, projectRoot } = resolveWorkerBaseDir(
+      workspaceRoot,
+      projectRootRaw,
+    );
 
     if (!existsSync(baseDir)) {
       try {
@@ -230,17 +231,14 @@ export class WorkerExecutorService implements IWorkerExecutor {
         time: new Date().toISOString(),
         meta: {
           stepCount: resumeSteps.length,
-          output_dir_relative: rel,
-          project_root: projectRootRel,
-          cwd_used: baseDir,
+          project_root: projectRoot,
         },
       });
       return this.runWorkerSteps(
         task,
         resumeSteps,
         baseDir,
-        rel,
-        projectRootRel,
+        projectRoot,
       );
     }
 
@@ -276,9 +274,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       meta: {
         files_count: deepFileTree.length,
         included_files: includedFiles,
-        output_dir_relative: rel,
-        project_root: projectRootRel,
-        cwd_used: baseDir,
+        project_root: projectRoot,
       },
     });
 
@@ -286,9 +282,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       step: 'worker_context_injected',
       time: new Date().toISOString(),
       meta: {
-        output_dir_relative: rel,
-        project_root: projectRootRel,
-        cwd_used: baseDir,
+        project_root: projectRoot,
         fileTree: deepFileTree,
         files_count: deepFileTree.length,
         included_files: includedFiles,
@@ -310,8 +304,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       role: task.role,
       workflowTechStack,
       taskTechStack,
-      outputDirRelative: rel,
-      projectRootRelative: projectRootRel,
+      projectRoot,
       fileTreeDeep: deepFileTree,
       importantFiles,
     });
@@ -395,15 +388,14 @@ export class WorkerExecutorService implements IWorkerExecutor {
       `Worker LLM 已接入：steps=${steps.length} taskId=${task.id}`,
     );
 
-    return this.runWorkerSteps(task, steps, baseDir, rel, projectRootRel);
+    return this.runWorkerSteps(task, steps, baseDir, projectRoot);
   }
 
   private async runWorkerSteps(
     task: WorkerExecuteInput,
     steps: WorkerLlmStep[],
     baseDir: string,
-    rel: string,
-    projectRootRel: string,
+    projectRoot: string,
   ): Promise<WorkerExecuteOutput> {
     const stepResults: Array<{
       index: number;
@@ -423,8 +415,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
           index: i,
           action: step.action,
           args: step.args,
-          project_root: projectRootRel,
-          cwd_used: baseDir,
+          project_root: projectRoot,
         },
       });
 
@@ -479,9 +470,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
             meta: {
               index: i,
               tool: toolResult.tool,
-              output_dir_relative: rel,
-              project_root: projectRootRel,
-              cwd_used: baseDir,
+              project_root: projectRoot,
             },
           });
           const remainingSteps = steps.slice(i).map((s) => ({
@@ -499,7 +488,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
               steps: stepResults,
               error: toolResult.error,
               lastTool: toolResult.tool,
-              outputDirRelative: rel,
+              projectRoot,
             },
           };
         }

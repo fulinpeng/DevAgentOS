@@ -10,7 +10,7 @@ export function NewTask() {
   const [goal, setGoal] = useState('')
   const [description, setDescription] = useState('')
   const [projectType, setProjectType] = useState('')
-  const [outputDir, setOutputDir] = useState('')
+  const [projectRoot, setProjectRoot] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -42,9 +42,9 @@ export function NewTask() {
       if (pt) {
         params.projectType = pt
       }
-      const od = outputDir.trim()
-      if (od) {
-        params.outputDir = od
+      const pr = projectRoot.trim()
+      if (pr) {
+        params.projectRoot = pr
       }
       const res = await apiPost<CreateTaskResponse>('/task/create', {
         name: n,
@@ -125,12 +125,12 @@ export function NewTask() {
           </label>
 
           <label className="form-field">
-            <span>输出目录 outputDir（可选）</span>
+            <span>项目根 projectRoot（可选，相对仓库根或本机绝对路径）</span>
             <input
               type="text"
-              value={outputDir}
-              onChange={(e) => setOutputDir(e.target.value)}
-              placeholder="apps/frontend/src"
+              value={projectRoot}
+              onChange={(e) => setProjectRoot(e.target.value)}
+              placeholder="sandbox/my-app 或 C:\\Users\\you\\project"
               disabled={busy}
               autoComplete="off"
             />

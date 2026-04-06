@@ -2,11 +2,24 @@ import { useEffect, useState } from 'react'
 import { apiPost } from '../api/client'
 import type { AppendTaskResponse } from '../types/task'
 
+function parametersForAppendDefaults(
+  raw: unknown,
+): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {}
+  }
+  const o = { ...(raw as Record<string, unknown>) }
+  delete o.workerResumeSteps
+  return o
+}
+
 type Props = {
   open: boolean
   onClose: () => void
   sourceTaskId: string
   defaultRole: string | null
+  /** 打开弹窗时填入 parameters 文本框的默认值（一般为当前页任务的 parameters） */
+  defaultParameters: unknown
   onDone: (newTaskId: string) => void
   onReload: () => Promise<void>
 }
@@ -16,6 +29,7 @@ export function TaskAppendModal({
   onClose,
   sourceTaskId,
   defaultRole,
+  defaultParameters,
   onDone,
   onReload,
 }: Props) {
@@ -32,8 +46,9 @@ export function TaskAppendModal({
     setErr(null)
     setName('')
     setRole(defaultRole ?? '')
-    setParamsJson('{}')
-  }, [open, defaultRole])
+    const base = parametersForAppendDefaults(defaultParameters)
+    setParamsJson(JSON.stringify(base, null, 2))
+  }, [open, defaultRole, defaultParameters])
 
   async function submit() {
     let parameters: Record<string, unknown> | undefined
@@ -142,7 +157,7 @@ export function TaskAppendModal({
           />
         </label>
         <label className="form-field">
-          <span>parameters（JSON）</span>
+          <span>parameters（JSON，默认已复制当前任务的 parameters，可改）</span>
           <textarea
             value={paramsJson}
             onChange={(e) => setParamsJson(e.target.value)}

@@ -2,15 +2,18 @@
  * System：Code-aware Agent，输出 steps[]；User：工程上下文 + 任务说明。
  */
 
+import * as path from 'node:path';
+
 export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执行 AI（Code-aware Agent）。
 
-你必须结合 User 中的「当前工作目录（projectRoot）」与「当前文件结构」「关键文件内容」做增量修改，避免重复造轮子；禁止把文件写到 workspace 根目录之外或未指明的路径。
+你必须结合 User 中的「当前工作目录（projectRoot）」与「当前文件结构」「关键文件内容」做增量修改，避免重复造轮子；禁止把文件写到 projectRoot 之外或未指明的相对路径。
 
 # 可用工具（每一步 action 字段填其一）
 
 1. runCommand — args: { "command": string }
    - 子进程 **cwd 固定为项目根目录（projectRoot）**，由系统设置，**不要传 cwd**。
-   - 仅允许命令以如下前缀开头：pnpm create vite、pnpm install、pnpm add（安全白名单；具体依赖包名须与 User 中给出的技术栈一致）
+   - 命令必须以服务端白名单前缀之一开头（例如：pnpm install / pnpm add / pnpm run / pnpm exec / pnpm dlx / pnpm create … / npm install / npm run / yarn …）；**禁止**裸写 node、git、powershell 等未放行命令。
+   - **禁止** \`pnpm run dev\`、\`npm run dev\`、\`vite\`（非 build）、\`next dev\` 等**长期不退出**的开发服务器命令：Worker 会等待进程结束，导致步骤一直挂起。验证工程请用 \`pnpm run build\` / \`test\` / \`lint\` 等会结束的脚本。
 2. writeFile — args: { "path": string, "content": string }
 3. readFile — args: { "path": string }
 4. listFiles — args: { "path"?: string }，默认 "."
@@ -23,17 +26,19 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 # 路径规则
 
 - 所有 path 均相对于 **projectRoot（User 中给出的当前工作目录）**，使用正斜杠；不得用 .. 跳出沙箱。
-- runCommand 已在 projectRoot 下执行；若脚手架在子目录生成工程，后续对该子目录的读写仍用相对 projectRoot 的路径。
+- **cwd 已是完整项目根**：不要再 createDirectory 一层与项目根**最后一级文件夹同名**的子目录（否则会出现「…/imgShow/imgShow」式重复嵌套）。业务子目录用 src、public 等名称。
+- 使用 Vite 等脚手架时，优先 **在当前目录初始化**：例如 \`pnpm create vite . --template react-ts\`（项目名参数用 \`.\`），**不要**再写 \`pnpm create vite 项目文件夹名\` 以免在 projectRoot 下又多一层同名文件夹。
+- runCommand 已在 projectRoot 下执行；若脚手架**必须**在子目录生成工程，后续读写仍用相对 projectRoot 的路径。
 
 # 行为规则（必须遵守）
 
 1. 必须输出 JSON，且必须使用 steps 数组（至少一步）。
 2. 必须基于已有项目结构进行修改或新增；不要重复创建已存在的文件（除非任务明确要求覆盖）。
 3. 优先修改已有文件，而不是无必要地全盘重写。
-4. 初始化新项目时：runCommand 仅允许以上白名单前缀；若当前白名单不足以覆盖目标栈（如纯后端脚手架），应优先用 writeFile/createDirectory 搭好 package.json 等结构，再 pnpm install / pnpm add。使用 pnpm create vite 时务必带齐 --template 等参数，避免交互卡住；安装依赖用**单独一步** runCommand；路径相对 projectRoot。
-5. 禁止使用磁盘绝对路径（如 C:\\...）。
+4. 初始化或构建：优先 pnpm install / pnpm run build / pnpm run test / pnpm create …；**不要**用 pnpm run dev 启动本地服务。使用 pnpm create vite 时务必带齐 --template 等参数；若白名单内无合适命令，用 writeFile/createDirectory 搭结构后再 pnpm install。安装依赖用**单独一步** runCommand。
+5. writeFile/readFile/listFiles 的 path 须为**相对路径**（相对 projectRoot）；禁止在 path 里写盘符或绝对路径。
 6. 禁止输出 action 为 noop；禁止空 steps。
-7. 每一步必须真实可执行；系统对单次 runCommand 有最长等待时间，子进程不退出会导致整步无法结束。
+7. 每一步必须真实可执行；runCommand 会**阻塞到命令退出**。开发服务器（dev/preview）不会自行退出，会导致步骤卡死，已被服务端拒绝；请用 build 等命令验证。
 
 只输出 JSON。`;
 
@@ -49,10 +54,8 @@ export type BuildWorkerUserContentInput = {
   workflowTechStack?: string[];
   /** 子任务侧重技术栈（parameters.taskTechStack） */
   taskTechStack?: string[];
-  /** 相对仓库根的 outputDir（配置原值，可能含子路径） */
-  outputDirRelative: string;
-  /** 相对仓库根的项目根（第一层目录），与工具沙箱一致 */
-  projectRootRelative: string;
+  /** 项目根目录（已解析后的绝对路径）；runCommand 的 cwd 与所有相对路径均以此为根 */
+  projectRoot: string;
   /** 深度扫描得到的文件列表（最多 50） */
   fileTreeDeep: string[];
   /** 关键文件路径 -> 内容片段 */
@@ -89,6 +92,19 @@ function formatFileTreeLines(paths: string[]): string {
   return paths.map((p) => `- ${p}`).join('\n');
 }
 
+/** 项目根路径最后一级目录名，用于提示模型勿再嵌套同名文件夹 */
+export function projectRootLeafName(projectRootAbs: string): string {
+  const t = projectRootAbs.trim();
+  if (!t) {
+    return '';
+  }
+  const base =
+    /^[a-zA-Z]:[\\/]/.test(t) || t.startsWith('\\\\')
+      ? path.win32.basename(path.win32.normalize(t))
+      : path.basename(path.normalize(t));
+  return base && base !== '.' && base !== '/' ? base : '';
+}
+
 function formatImportantFiles(files: Record<string, string>): string {
   const keys = Object.keys(files);
   if (keys.length === 0) {
@@ -105,6 +121,20 @@ function formatImportantFiles(files: Record<string, string>): string {
 export function buildWorkerUserContent(
   input: BuildWorkerUserContentInput,
 ): string {
+  const leaf = projectRootLeafName(input.projectRoot);
+  const antiNest =
+    leaf !== ''
+      ? [
+          '# 目录约定（必读，避免多建一层）',
+          '',
+          `系统已将 **cwd 设为你的项目根**，其最后一级文件夹名为「${leaf}」。`,
+          `- 禁止再执行 createDirectory("${leaf}") 或仅创建名为「${leaf}」的单层目录（否则会出现 .../${leaf}/${leaf}/）。`,
+          `- 脚手架：请用「在当前目录创建」的方式，例如 pnpm create vite . --template react-ts（注意项目位置用 **.**），不要 pnpm create vite ${leaf}。`,
+          `- 需要子目录时请用 src、public、components 等名称，不要用与项目根文件夹重复的名字。`,
+          '',
+        ]
+      : [];
+
   const body = [
     '# 当前任务',
     `- taskId: ${input.taskId}`,
@@ -120,18 +150,15 @@ export function buildWorkerUserContent(
     '# 项目目标',
     input.goal || input.taskName,
     '',
-    '# 当前工作目录',
+    '# 当前工作目录（projectRoot）',
     '',
-    '你正在以下目录中执行任务（相对仓库根）：',
+    '以下目录为唯一工作区：所有 runCommand 的 cwd、以及 writeFile/readFile/listFiles/createDirectory 的相对路径，均以此为根。',
     '',
-    input.projectRootRelative,
+    input.projectRoot,
     '',
-    '所有路径必须基于该目录。',
-    '禁止在该目录之外创建文件。',
+    '禁止在该目录之外创建或引用文件。',
     '',
-    '（配置中的 outputDir 可能更深，例如含子路径；系统已将沙箱与命令 cwd 统一为上述 projectRoot。）',
-    `outputDir 配置值：${input.outputDirRelative}`,
-    '',
+    ...antiNest,
     '# 当前项目文件结构（递归扫描，已忽略 node_modules / .git / dist，最多 50 个文件）',
     formatFileTreeLines(input.fileTreeDeep),
     '',

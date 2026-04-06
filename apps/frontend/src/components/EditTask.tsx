@@ -12,7 +12,11 @@ function stringFromParams(params: unknown, key: string): string {
   return ''
 }
 
-function outputDirFromParams(params: unknown): string {
+function projectRootFromParams(params: unknown): string {
+  const pr = stringFromParams(params, 'projectRoot')
+  if (pr) {
+    return pr
+  }
   return stringFromParams(params, 'outputDir')
 }
 
@@ -24,7 +28,7 @@ export function EditTask() {
   const [goal, setGoal] = useState('')
   const [description, setDescription] = useState('')
   const [projectType, setProjectType] = useState('')
-  const [outputDir, setOutputDir] = useState('')
+  const [projectRoot, setProjectRoot] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [metaErr, setMetaErr] = useState<string | null>(null)
@@ -50,7 +54,7 @@ export function EditTask() {
         setGoal(stringFromParams(p, 'goal'))
         setDescription(stringFromParams(p, 'description'))
         setProjectType(stringFromParams(p, 'projectType'))
-        setOutputDir(outputDirFromParams(p))
+        setProjectRoot(projectRootFromParams(p))
         setLoading(false)
       })
       .catch((e: Error) => {
@@ -88,9 +92,9 @@ export function EditTask() {
       if (pt) {
         params.projectType = pt
       }
-      const od = outputDir.trim()
-      if (od) {
-        params.outputDir = od
+      const pr = projectRoot.trim()
+      if (pr) {
+        params.projectRoot = pr
       }
       await apiPatch<TaskDetailResponse>(`/task/${id}`, {
         name: n,
@@ -133,7 +137,7 @@ export function EditTask() {
       <div className="panel">
         <h2>编辑任务草稿</h2>
         <p className="muted">
-          未开始执行的任务可改名称与 parameters（goal、description、projectType、outputDir
+          未开始执行的任务可改名称与 parameters（goal、description、projectType、projectRoot
           等）。详情页亦可用弹框编辑 JSON。
         </p>
 
@@ -188,12 +192,12 @@ export function EditTask() {
           </label>
 
           <label className="form-field">
-            <span>输出目录 outputDir（可选）</span>
+            <span>项目根 projectRoot（可选）</span>
             <input
               type="text"
-              value={outputDir}
-              onChange={(e) => setOutputDir(e.target.value)}
-              placeholder="apps/frontend/src"
+              value={projectRoot}
+              onChange={(e) => setProjectRoot(e.target.value)}
+              placeholder="sandbox/my-app 或本机绝对路径"
               disabled={busy}
               autoComplete="off"
             />

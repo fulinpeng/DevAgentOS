@@ -115,8 +115,9 @@ export class WorkflowService {
     const projectType = readStringParam(parameters, 'projectType');
     const techStack = readStringArrayParam(parameters, 'techStack');
     const constraints = readStringArrayParam(parameters, 'constraints');
-    const outputDir = readStringParam(parameters, 'outputDir');
-    const projectName = readStringParam(parameters, 'projectName');
+    const projectRoot =
+      readStringParam(parameters, 'projectRoot') ??
+      readStringParam(parameters, 'outputDir');
 
     const llmModel = this.config.get<string>('LLM_MODEL', 'qwen-turbo');
 
@@ -126,8 +127,7 @@ export class WorkflowService {
       ...(projectType ? { projectType } : {}),
       ...(techStack ? { techStack } : {}),
       ...(constraints ? { constraints } : {}),
-      ...(outputDir ? { outputDir } : {}),
-      ...(projectName ? { projectName } : {}),
+      ...(projectRoot ? { projectRoot } : {}),
     });
 
     if (raw?.trim()) {

@@ -1,5 +1,6 @@
 import { exec } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
+import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { Injectable, Logger } from '@nestjs/common';
 import { normalizeAction } from './action-normalize';
@@ -54,18 +55,96 @@ export type ToolExecuteResult = {
   error?: string;
 };
 
-/** 仅允许这些前缀开头的 shell 命令（防任意命令执行） */
+/**
+ * 仅允许这些前缀开头的 shell 命令（防任意命令执行）。
+ * 较长前缀须优先匹配（例如 pnpm create vite 先于 pnpm create）。
+ */
 const ALLOWED_COMMAND_PREFIXES = [
   'pnpm create vite',
+  'pnpm create',
   'pnpm install',
   'pnpm add',
+  'pnpm run',
+  'pnpm exec',
+  'pnpm dlx',
+  'pnpm remove',
+  'pnpm update',
+  'npm install',
+  'npm ci',
+  'npm run',
+  'npm create',
+  'npm exec',
+  'yarn install',
+  'yarn add',
+  'yarn run',
+  'yarn create',
 ] as const;
+
+const ALLOWED_COMMAND_PREFIXES_SORTED = [...ALLOWED_COMMAND_PREFIXES].sort(
+  (a, b) => b.length - a.length,
+);
+
+/**
+ * 开发服务器 / 常驻进程：exec 会一直等待，导致 Worker 步骤无法结束。
+ * 允许 vite build；禁止 vite、vite preview、pnpm run dev 等。
+ */
+export function isLongRunningDevServerCommand(command: string): boolean {
+  const c = command.trim();
+  if (!c) {
+    return false;
+  }
+
+  if (/^vite\s+build(\s|$)/i.test(c)) {
+    return false;
+  }
+  if (/^vite(\s|$)/i.test(c)) {
+    return true;
+  }
+
+  const blocked = [
+    /^pnpm\s+run\s+dev(\s|$)/i,
+    /^pnpm\s+run\s+preview(\s|$)/i,
+    /^pnpm\s+dev(\s|$)/i,
+    /^npm\s+run\s+dev(\s|$)/i,
+    /^npm\s+run\s+preview(\s|$)/i,
+    /^yarn\s+run\s+dev(\s|$)/i,
+    /^yarn\s+run\s+preview(\s|$)/i,
+    /^yarn\s+dev(\s|$)/i,
+    /^next\s+dev(\s|$)/i,
+    /^webpack\s+serve(\s|$)/i,
+    /^webpack-dev-server(\s|$)/i,
+    /^astro\s+dev(\s|$)/i,
+    /^nuxt\s+dev(\s|$)/i,
+    /^ng\s+serve(\s|$)/i,
+  ];
+  return blocked.some((re) => re.test(c));
+}
+
+const LONG_RUNNING_HINT =
+  'run_command_long_running: 开发服务器会持续运行，Worker 需等待子进程结束，无法用于 dev/preview。请改用 pnpm run build（或 test/lint）验证；本地调试请在终端手动执行 pnpm run dev。';
+
+/**
+ * 若仅创建「与项目根最后一级同名」的单层目录，会在 projectRoot 下多嵌套一层（如 .../imgShow/imgShow）。
+ */
+function isRedundantSameNameAsProjectRoot(
+  baseDir: string,
+  relativePath: string,
+): boolean {
+  const leaf = path.basename(path.normalize(baseDir));
+  if (!leaf || leaf === '.' || leaf === path.sep) {
+    return false;
+  }
+  const norm = relativePath
+    .replace(/\\/g, '/')
+    .trim()
+    .replace(/^\.\//, '');
+  const segments = norm.split('/').filter(Boolean);
+  return segments.length === 1 && segments[0] === leaf;
+}
 
 function assertAllowedCommand(command: string): void {
   const c = command.trim();
-  if (
-    !ALLOWED_COMMAND_PREFIXES.some((prefix) => c.startsWith(prefix))
-  ) {
+  if (!ALLOWED_COMMAND_PREFIXES_SORTED.some((prefix) => c.startsWith(prefix))) {
     throw new Error(
       `Command not allowed (must start with one of: ${ALLOWED_COMMAND_PREFIXES.join(', ')})`,
     );
@@ -139,6 +218,13 @@ export class ToolExecutor {
               error: 'createDirectory requires args.path',
             };
           }
+          if (isRedundantSameNameAsProjectRoot(baseDir, pathStr)) {
+            return {
+              success: false,
+              tool: action,
+              error: `createDirectory("${pathStr}") 与项目根文件夹同名，会多嵌套一层；cwd 已是项目根，请改用 src/public 等子目录，或脚手架使用 pnpm create vite .`,
+            };
+          }
           const full = resolveUnderBase(baseDir, pathStr);
           mkdirSync(full, { recursive: true });
           return {
@@ -161,6 +247,17 @@ export class ToolExecutor {
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             return { success: false, tool: action, error: msg };
+          }
+          if (isLongRunningDevServerCommand(command)) {
+            return {
+              success: false,
+              tool: action,
+              error: LONG_RUNNING_HINT,
+              data: {
+                code: 'run_command_long_running',
+                command,
+              },
+            };
           }
           /** 与文件工具一致：始终在 projectRoot（baseDir）下执行，忽略 args.cwd */
           const resolvedCwd = baseDir;

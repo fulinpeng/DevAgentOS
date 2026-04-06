@@ -134,7 +134,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         parameters: {
           description:
             'React app with login and dashboard pages; files under apps/frontend/src.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
           projectType: 'web-frontend',
         },
       })
@@ -161,17 +161,17 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .patch(`/task/${parentId}`)
       .send({
         name: 'draft only',
-        parameters: { features: ['a', 'b'], outputDir: 'apps/frontend/src' },
+        parameters: { features: ['a', 'b'], projectRoot: 'apps/frontend/src' },
       })
       .expect(200);
 
     expect(patch.body.task.status).toBe('CREATED');
     const params = patch.body.task.parameters as {
       features: string[];
-      outputDir: string;
+      projectRoot: string;
     };
     expect(params.features).toEqual(['a', 'b']);
-    expect(params.outputDir).toBe('apps/frontend/src');
+    expect(params.projectRoot).toBe('apps/frontend/src');
   });
 
   it('POST /workflow/generate + approve-plan：生成子任务且主任务 PLAN_APPROVED', async () => {
@@ -182,7 +182,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         parameters: {
           description:
             'React app with login and dashboard pages; files under apps/frontend/src.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
           projectType: 'web-frontend',
         },
       })
@@ -212,7 +212,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         parameters: {
           description:
             'React app with login and dashboard pages; files under apps/frontend/src.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
           projectType: 'web-frontend',
         },
       })
@@ -255,7 +255,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         name: 'x',
         parameters: {
           description: 'Single feature scaffolding.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
         },
       })
       .expect(201);
@@ -288,7 +288,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         name: 'x',
         parameters: {
           description: 'Single feature scaffolding.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
         },
       })
       .expect(201);
@@ -320,7 +320,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         parameters: {
           description:
             'React app with login and dashboard pages; files under apps/frontend/src.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
           projectType: 'web-frontend',
         },
       })
@@ -386,7 +386,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         parameters: {
           description:
             'React app with login and dashboard pages; files under apps/frontend/src.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
           projectType: 'web-frontend',
         },
       })
@@ -432,7 +432,7 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
         parameters: {
           description:
             'React app with login and dashboard pages; files under apps/frontend/src.',
-          outputDir: 'apps/frontend/src',
+          projectRoot: 'apps/frontend/src',
           projectType: 'web-frontend',
         },
       })
