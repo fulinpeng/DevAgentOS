@@ -17,6 +17,8 @@ enum TaskStatus {
   PENDING
   WAITING_APPROVAL
   RUNNING
+  /// 子任务：Worker 步骤超时等可续跑暂停（result 含 remainingSteps）
+  WORKER_PAUSED
   COMPLETED
   FAILED
 }

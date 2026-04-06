@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Task, TaskStatus } from '@prisma/client';
+import { TASK_STATUS_WORKER_PAUSED } from '../../../prisma/task-status';
 import { shouldRequireApproval } from '../domain/approval-policy';
 import { evaluateRisk } from '../domain/risk-policy';
 import {
@@ -25,11 +26,14 @@ export type RoleExecuteResult = {
   idempotent?: boolean;
   /** 已进入待审批，未调用 Worker */
   pausedForApproval?: boolean;
+  /** Worker 步骤超时等可续跑暂停，任务已标为 WORKER_PAUSED */
+  workerPaused?: boolean;
 };
 
 const REDIS_RUNNING = 'running';
 const REDIS_COMPLETED = 'completed';
 const REDIS_WAITING_APPROVAL = 'waiting_approval';
+const REDIS_WORKER_PAUSED = 'worker_paused';
 
 function toStatusSnapshot(status: TaskStatus): TaskStatusSnapshot {
   return status as TaskStatusSnapshot;
@@ -52,6 +56,13 @@ function mergeParameters(
 ): Record<string, unknown> {
   const prev = jsonToResultRecord(base);
   return { ...prev, ...patch };
+}
+
+function stripWorkerResumeSteps(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const { workerResumeSteps: _w, ...rest } = params;
+  return rest;
 }
 
 @Injectable()
@@ -168,16 +179,29 @@ export class RoleService {
       }
 
       const risk = evaluateRisk(latest);
-      const mergedParams = mergeParameters(latest.parameters, {
+      let mergedParams = mergeParameters(latest.parameters, {
         riskLevel: risk,
       });
+
+      if (latest.status === TASK_STATUS_WORKER_PAUSED) {
+        const prevResult = jsonToResultRecord(latest.result);
+        const rem = prevResult.remainingSteps;
+        if (Array.isArray(rem) && rem.length > 0) {
+          mergedParams = mergeParameters(mergedParams, {
+            workerResumeSteps: rem,
+          });
+        }
+      }
 
       await this.taskRedis.appendLog(taskId, 'risk_evaluated', {
         level: risk,
       });
 
       const gateSnapshot = { name: latest.name, parameters: mergedParams };
-      if (shouldRequireApproval(gateSnapshot)) {
+      if (
+        latest.status !== TASK_STATUS_WORKER_PAUSED &&
+        shouldRequireApproval(gateSnapshot)
+      ) {
         const waiting = await this.taskRepository.updateTask(taskId, {
           status: TaskStatus.WAITING_APPROVAL,
           parameters: mergedParams,
@@ -205,7 +229,7 @@ export class RoleService {
         id: latestForRun.id,
         name: latestForRun.name,
         role: latestForRun.role,
-        parameters: jsonToResultRecord(latestForRun.parameters),
+        parameters: mergedParams,
         parentId: latestForRun.parentId,
       });
 
@@ -213,13 +237,29 @@ export class RoleService {
         success: workerResult.success,
       });
 
+      const wr = jsonToResultRecord(workerResult.result);
+      if (wr.workerPaused === true) {
+        const updated = await this.taskRepository.updateTask(taskId, {
+          status: TASK_STATUS_WORKER_PAUSED,
+          result: workerResult.result,
+        });
+        await this.taskRedis.updateStatus(taskId, REDIS_WORKER_PAUSED);
+        await this.taskRedis.appendLog(taskId, 'worker_paused', {
+          pauseReason: wr.pauseReason,
+        });
+        return { task: updated, workerResult, workerPaused: true };
+      }
+
       if (!workerResult.success) {
         throw new BadRequestException('Worker execution failed');
       }
 
+      const paramsAfter = stripWorkerResumeSteps(mergedParams);
+
       const updated = await this.taskRepository.updateTask(taskId, {
         status: TaskStatus.COMPLETED,
         result: workerResult.result,
+        parameters: paramsAfter,
       });
       await this.taskRedis.updateStatus(taskId, REDIS_COMPLETED);
       await this.taskRedis.appendLog(taskId, 'completed');

@@ -8,6 +8,34 @@ import { toolListFiles, toolReadFile, toolWriteFile } from './file-tools';
 
 const execAsync = promisify(exec);
 
+/**
+ * `pnpm create vite` / `pnpm install` 等若子进程不退出，未设置 timeout 会导致 Node 一直等待，
+ * Worker 无法写入 step_success，任务长期 RUNNING。超时后子进程会被终止并返回 run_command_timeout。
+ */
+const RUN_COMMAND_TIMEOUT_MS = 600_000; // 10 分钟
+
+function isRunCommandExecTimeout(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null) {
+    return false;
+  }
+  const ex = e as NodeJS.ErrnoException & {
+    killed?: boolean;
+    signal?: string;
+  };
+  if (ex.code === 'ETIMEDOUT') {
+    return true;
+  }
+  const msg = String(ex.message ?? '').toLowerCase();
+  if (msg.includes('timed out') || msg.includes('timeout')) {
+    return true;
+  }
+  /** Node 在 timeout 到期后会 kill 子进程；Windows 上常见 killed + SIGTERM */
+  if (ex.killed === true) {
+    return true;
+  }
+  return false;
+}
+
 export const ALLOWED_TOOLS = [
   'writeFile',
   'readFile',
@@ -143,6 +171,7 @@ export class ToolExecutor {
             const { stdout, stderr } = await execAsync(command, {
               cwd: resolvedCwd,
               maxBuffer: 10 * 1024 * 1024,
+              timeout: RUN_COMMAND_TIMEOUT_MS,
             });
             return {
               success: true,
@@ -161,6 +190,20 @@ export class ToolExecutor {
               stderr?: string;
               code?: number;
             };
+            if (isRunCommandExecTimeout(e)) {
+              return {
+                success: false,
+                tool: action,
+                error: 'run_command_timeout',
+                data: {
+                  code: 'run_command_timeout',
+                  command,
+                  cwd: resolvedCwd,
+                  stdout: ex.stdout ? String(ex.stdout).slice(0, 4000) : undefined,
+                  stderr: ex.stderr ? String(ex.stderr).slice(0, 4000) : undefined,
+                },
+              };
+            }
             const msg =
               ex.message ??
               `runCommand failed (code=${ex.code ?? '?'})`;

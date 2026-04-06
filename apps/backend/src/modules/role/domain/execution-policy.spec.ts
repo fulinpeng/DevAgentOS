@@ -11,6 +11,10 @@ describe('routeRoleExecution', () => {
     );
   });
 
+  it('WORKER_PAUSED → execute（续跑）', () => {
+    expect(routeRoleExecution({ status: 'WORKER_PAUSED' })).toBe('execute');
+  });
+
   it('RUNNING → reject_running', () => {
     expect(routeRoleExecution({ status: 'RUNNING' })).toBe('reject_running');
   });
@@ -49,8 +53,9 @@ describe('routeRoleExecution', () => {
 });
 
 describe('decideExecution', () => {
-  it('仅 PENDING 为 true', () => {
+  it('PENDING / WORKER_PAUSED 为 true', () => {
     expect(decideExecution({ status: 'PENDING' })).toBe(true);
+    expect(decideExecution({ status: 'WORKER_PAUSED' })).toBe(true);
     expect(decideExecution({ status: 'RUNNING' })).toBe(false);
     expect(decideExecution({ status: 'COMPLETED' })).toBe(false);
     expect(decideExecution({ status: 'WAITING_APPROVAL' })).toBe(false);

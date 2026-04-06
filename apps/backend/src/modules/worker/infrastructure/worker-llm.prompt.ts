@@ -1,16 +1,15 @@
 /**
- * System：约束输出为单条 JSON，使用 steps 数组顺序执行（Project Builder）。
- * User：由 buildWorkerUserContent 注入任务名、outputDir、当前目录列表。
+ * System：Code-aware Agent，输出 steps[]；User：工程上下文 + 任务说明。
  */
-export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个工程执行 AI（Project Builder Agent）。
 
-你的目标是：根据任务说明，生成一系列可执行步骤来完成任务（初始化项目、写文件、建目录等）。
+export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执行 AI（Code-aware Agent）。
+
+你正在一个真实项目的沙箱目录（outputDir）内工作；必须结合「当前文件结构」与「关键文件内容」做增量修改，避免重复造轮子。
 
 # 可用工具（每一步 action 字段填其一）
 
 1. runCommand — args: { "command": string, "cwd"?: string }
-   - command 为要在沙箱内执行的 shell 命令；cwd 可选，为相对沙箱根的路径。
-   - 仅允许以如下前缀开头：pnpm create vite、pnpm install、pnpm add
+   - 仅允许命令以如下前缀开头：pnpm create vite、pnpm install、pnpm add
 2. writeFile — args: { "path": string, "content": string }
 3. readFile — args: { "path": string }
 4. listFiles — args: { "path"?: string }，默认 "."
@@ -18,52 +17,96 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个工程执行 AI（Project 
 
 # 输出格式（仅一条 JSON，不要 markdown 代码块，不要解释性文字）
 
-必须包含顶层字段 "steps"，为数组；数组中每一项为 { "action": string, "args": object }。
-
-示例：
-{"steps":[{"action":"runCommand","args":{"command":"pnpm create vite my-app --template react-ts"}},{"action":"runCommand","args":{"command":"pnpm install","cwd":"my-app"}}]}
+必须包含顶层字段 "steps"，为数组；每一项为 { "action": string, "args": object }。
 
 # 路径规则
 
-- writeFile / readFile / listFiles / createDirectory 的 path 均为相对于任务沙箱根目录（outputDir）的相对路径，使用正斜杠；不得用 .. 跳出沙箱。
-- runCommand 的 cwd 若给出，同样为相对沙箱根的路径。
+- 除 runCommand 的 cwd 外，所有 path 均为相对于任务沙箱根目录的相对路径，使用正斜杠；不得用 .. 跳出沙箱。
 
 # 行为规则（必须遵守）
 
 1. 必须输出 JSON，且必须使用 steps 数组（至少一步）。
-2. 初始化前端项目时优先使用：pnpm create vite <name> --template react-ts（或项目要求的模板），再在子目录执行 pnpm install。
-3. 安装依赖必须使用 pnpm install 或 pnpm add（符合白名单前缀）。
-4. 禁止输出 action 为 noop；禁止空 steps。
-5. 每一步必须可执行、顺序合理（先建项目再装依赖再写文件等）。
+2. 必须基于已有项目结构进行修改或新增；不要重复创建已存在的文件（除非任务明确要求覆盖）。
+3. 优先修改已有文件，而不是无必要地全盘重写。
+4. 初始化新项目时可用 pnpm create vite（务必带齐 --template 等参数，避免交互卡住）；创建完成后用**单独一步** runCommand 执行 pnpm install，cwd 指向生成目录。
+5. runCommand 的 cwd 必须填**相对沙箱根**的路径（如 react-project），不要使用磁盘绝对路径（如 C:\\...）。
+6. 禁止输出 action 为 noop；禁止空 steps。
+7. 每一步必须真实可执行；系统对单次 runCommand 有最长等待时间，子进程不退出会导致整步无法结束。
 
 只输出 JSON。`;
 
-export function buildWorkerUserContent(input: {
+export type BuildWorkerUserContentInput = {
   taskId: string;
   taskName: string;
+  /** 任务执行说明（来自 parameters 或名称） */
+  taskDescription: string;
+  /** 项目/工作流目标 */
+  goal: string;
   role: string | null;
-  /** 相对仓库根的 outputDir，与后端解析一致 */
+  /** 相对仓库根的 outputDir */
   outputDirRelative: string;
-  /** listFiles('.') 得到的文件名列表；空目录时为空数组 */
-  fileTree: string[];
-}): string {
-  const tree =
-    input.fileTree.length > 0
-      ? input.fileTree.map((n) => `- ${n}`).join('\n')
-      : '（目录为空，可新建文件或运行 pnpm create vite 等）';
+  /** 深度扫描得到的文件列表（最多 50） */
+  fileTreeDeep: string[];
+  /** 关键文件路径 -> 内容片段 */
+  importantFiles: Record<string, string>;
+};
 
-  return [
+/** 控制 User 消息总长，避免超出模型上下文 */
+const MAX_USER_PROMPT_CHARS = 48_000;
+
+export function clipWorkerUserPrompt(text: string): string {
+  if (text.length <= MAX_USER_PROMPT_CHARS) {
+    return text;
+  }
+  return `${text.slice(0, MAX_USER_PROMPT_CHARS)}\n\n…(user prompt truncated)`;
+}
+
+function formatFileTreeLines(paths: string[]): string {
+  if (paths.length === 0) {
+    return '（空目录或尚未创建文件）';
+  }
+  return paths.map((p) => `- ${p}`).join('\n');
+}
+
+function formatImportantFiles(files: Record<string, string>): string {
+  const keys = Object.keys(files);
+  if (keys.length === 0) {
+    return '（未找到 package.json / vite.config.ts / src/main.tsx / src/App.tsx 或不可读）';
+  }
+  return keys
+    .map((k) => {
+      const body = files[k] ?? '';
+      return `### ${k}\n\`\`\`\n${body}\n\`\`\``;
+    })
+    .join('\n\n');
+}
+
+export function buildWorkerUserContent(
+  input: BuildWorkerUserContentInput,
+): string {
+  const body = [
     '# 当前任务',
     `- taskId: ${input.taskId}`,
     `- 名称: ${input.taskName}`,
     `- 角色: ${input.role ?? '（未指定）'}`,
     '',
+    '# 任务说明',
+    input.taskDescription || '（未单独提供，见名称）',
+    '',
+    '# 项目目标',
+    input.goal || input.taskName,
+    '',
     '# 可操作目录（沙箱根，相对仓库根）',
     input.outputDirRelative,
     '',
-    '# 当前沙箱根目录下的文件/文件夹（已由系统 listFiles 列出）',
-    tree,
+    '# 当前项目文件结构（递归扫描，已忽略 node_modules / .git / dist，最多 50 个文件）',
+    formatFileTreeLines(input.fileTreeDeep),
+    '',
+    '# 关键文件内容（节选，每文件最多 2000 字符）',
+    formatImportantFiles(input.importantFiles),
     '',
     '# 请你输出一条 JSON：顶层含 steps 数组，按顺序完成本任务（禁止 noop）',
   ].join('\n');
+
+  return clipWorkerUserPrompt(body);
 }

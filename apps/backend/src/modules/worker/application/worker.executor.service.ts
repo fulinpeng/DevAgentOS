@@ -16,11 +16,12 @@ import {
   resolveOutputDirRelative,
   toAbsoluteSandbox,
 } from '../infrastructure/resolve-output-dir';
+import { FileContextService } from '../infrastructure/file-context.service';
 import {
   buildWorkerUserContent,
   WORKER_TOOL_SYSTEM_PROMPT,
 } from '../infrastructure/worker-llm.prompt';
-import { ToolExecutor } from '../tool/tool-executor';
+import { ToolExecutor, type ToolExecuteResult } from '../tool/tool-executor';
 import { normalizeAction } from '../tool/action-normalize';
 
 function getDashScopeApiKey(config: ConfigService): string {
@@ -95,6 +96,66 @@ function stepsContainOnlyNoop(steps: WorkerLlmStep[]): boolean {
   return steps.every((s) => normalizeAction(s.action) === 'noop');
 }
 
+function parseWorkerResumeSteps(
+  parameters: Record<string, unknown> | null,
+): WorkerLlmStep[] | null {
+  if (!parameters || typeof parameters !== 'object') {
+    return null;
+  }
+  const raw = parameters.workerResumeSteps;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null;
+  }
+  const out: WorkerLlmStep[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      return null;
+    }
+    const s = item as Record<string, unknown>;
+    if (s.action === undefined || s.action === null) {
+      return null;
+    }
+    const action = String(s.action).trim();
+    if (!action) {
+      return null;
+    }
+    const args =
+      s.args && typeof s.args === 'object' && !Array.isArray(s.args)
+        ? (s.args as Record<string, unknown>)
+        : {};
+    out.push({ action, args });
+  }
+  return out.length > 0 ? out : null;
+}
+
+function isRunCommandTimeout(toolResult: ToolExecuteResult): boolean {
+  const data = toolResult.data as { code?: string } | undefined;
+  return (
+    data?.code === 'run_command_timeout' ||
+    toolResult.error === 'run_command_timeout'
+  );
+}
+
+function extractTaskContext(task: WorkerExecuteInput): {
+  taskDescription: string;
+  goal: string;
+} {
+  const p = task.parameters;
+  if (p !== null && typeof p === 'object' && !Array.isArray(p)) {
+    const r = p as Record<string, unknown>;
+    const td =
+      typeof r.taskDescription === 'string' ? r.taskDescription.trim() : '';
+    const wg =
+      typeof r.workflowGoal === 'string' ? r.workflowGoal.trim() : '';
+    const g = typeof r.goal === 'string' ? r.goal.trim() : '';
+    return {
+      taskDescription: td || task.name,
+      goal: wg || g || task.name,
+    };
+  }
+  return { taskDescription: task.name, goal: task.name };
+}
+
 @Injectable()
 export class WorkerExecutorService implements IWorkerExecutor {
   private readonly logger = new Logger(WorkerExecutorService.name);
@@ -105,6 +166,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
     private readonly llm: WorkflowLlmService,
     private readonly toolExecutor: ToolExecutor,
     private readonly taskRedis: TaskRedis,
+    private readonly fileContext: FileContextService,
   ) {}
 
   async execute(task: WorkerExecuteInput): Promise<WorkerExecuteOutput> {
@@ -125,6 +187,28 @@ export class WorkerExecutorService implements IWorkerExecutor {
 
     const workspaceRoot = getWorkspaceRoot(this.config);
     const baseDir = toAbsoluteSandbox(workspaceRoot, rel);
+
+    if (!existsSync(baseDir)) {
+      try {
+        await mkdir(baseDir, { recursive: true });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          success: false,
+          result: { error: `worker_sandbox_mkdir_failed: ${msg}` },
+        };
+      }
+    }
+
+    const resumeSteps = parseWorkerResumeSteps(task.parameters);
+    if (resumeSteps && resumeSteps.length > 0) {
+      await this.taskRedis.appendExecutionLog(task.id, {
+        step: 'worker_resume',
+        time: new Date().toISOString(),
+        meta: { stepCount: resumeSteps.length, outputDirRelative: rel },
+      });
+      return this.runWorkerSteps(task, resumeSteps, baseDir, rel);
+    }
 
     const apiKey = getDashScopeApiKey(this.config);
 
@@ -148,32 +232,19 @@ export class WorkerExecutorService implements IWorkerExecutor {
       };
     }
 
-    if (!existsSync(baseDir)) {
-      try {
-        await mkdir(baseDir, { recursive: true });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return {
-          success: false,
-          result: { error: `worker_sandbox_mkdir_failed: ${msg}` },
-        };
-      }
-    }
+    const deepFileTree = this.fileContext.getFileTree(baseDir);
+    const importantFiles = this.fileContext.getImportantFiles(baseDir);
+    const includedFiles = Object.keys(importantFiles);
 
-    const listRes = await this.toolExecutor.execute(
-      'listFiles',
-      { path: '.' },
-      baseDir,
-    );
-    const fileTree: string[] =
-      listRes.success && Array.isArray(listRes.data?.entries)
-        ? (listRes.data!.entries as string[])
-        : [];
-    if (!listRes.success) {
-      this.logger.warn(
-        `Worker 列出沙箱目录失败（将继续 LLM）：${listRes.error ?? 'unknown'}`,
-      );
-    }
+    await this.taskRedis.appendExecutionLog(task.id, {
+      step: 'file_context_generated',
+      time: new Date().toISOString(),
+      meta: {
+        files_count: deepFileTree.length,
+        included_files: includedFiles,
+        outputDirRelative: rel,
+      },
+    });
 
     await this.taskRedis.appendExecutionLog(task.id, {
       step: 'worker_context_injected',
@@ -181,21 +252,27 @@ export class WorkerExecutorService implements IWorkerExecutor {
       meta: {
         outputDirRelative: rel,
         baseDir,
-        fileTree,
-        listFilesOk: listRes.success,
+        fileTree: deepFileTree,
+        files_count: deepFileTree.length,
+        included_files: includedFiles,
       },
     });
 
     this.logger.log(
-      `Worker LLM 将调用：taskId=${task.id} files=${fileTree.length}`,
+      `Worker LLM 将调用：taskId=${task.id} treeFiles=${deepFileTree.length} important=${includedFiles.length}`,
     );
+
+    const { taskDescription, goal } = extractTaskContext(task);
 
     const user = buildWorkerUserContent({
       taskId: task.id,
       taskName: task.name,
+      taskDescription,
+      goal,
       role: task.role,
       outputDirRelative: rel,
-      fileTree,
+      fileTreeDeep: deepFileTree,
+      importantFiles,
     });
     let raw: string;
     try {
@@ -244,7 +321,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
         time: new Date().toISOString(),
         meta: {
           raw: clipped.text,
-          fileTree,
+          fileTree: deepFileTree,
           hint: '禁止 noop；请使用 steps 产出 runCommand/writeFile/createDirectory 等',
         },
       });
@@ -268,13 +345,24 @@ export class WorkerExecutorService implements IWorkerExecutor {
         raw: clippedOk.text,
         rawChars: clippedOk.totalChars,
         rawTruncated: clippedOk.truncated,
-        fileTree,
+        fileTree: deepFileTree,
+        files_count: deepFileTree.length,
+        included_files: includedFiles,
       },
     });
     this.logger.log(
       `Worker LLM 已接入：steps=${steps.length} taskId=${task.id}`,
     );
 
+    return this.runWorkerSteps(task, steps, baseDir, rel);
+  }
+
+  private async runWorkerSteps(
+    task: WorkerExecuteInput,
+    steps: WorkerLlmStep[],
+    baseDir: string,
+    rel: string,
+  ): Promise<WorkerExecuteOutput> {
     const stepResults: Array<{
       index: number;
       action: string;
@@ -336,6 +424,35 @@ export class WorkerExecutorService implements IWorkerExecutor {
           success: false,
           error: toolResult.error,
         });
+        if (isRunCommandTimeout(toolResult)) {
+          await this.taskRedis.appendExecutionLog(task.id, {
+            step: 'step_timeout',
+            time: new Date().toISOString(),
+            meta: {
+              index: i,
+              tool: toolResult.tool,
+              outputDirRelative: rel,
+            },
+          });
+          const remainingSteps = steps.slice(i).map((s) => ({
+            action: s.action,
+            args: s.args,
+          }));
+          return {
+            success: false,
+            result: {
+              workerPaused: true,
+              pauseReason: 'run_command_timeout',
+              failedAtIndex: i,
+              remainingSteps,
+              mode: 'steps',
+              steps: stepResults,
+              error: toolResult.error,
+              lastTool: toolResult.tool,
+              outputDirRelative: rel,
+            },
+          };
+        }
         return {
           success: false,
           result: {

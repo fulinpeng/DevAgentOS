@@ -10,6 +10,7 @@ export type TaskStatusSnapshot =
   | 'PENDING'
   | 'WAITING_APPROVAL'
   | 'RUNNING'
+  | 'WORKER_PAUSED'
   | 'COMPLETED'
   | 'FAILED';
 
@@ -27,6 +28,7 @@ export type RoleExecutionRoute =
 
 /**
  * - PENDING → 走完整执行管线（含审批门禁）
+ * - WORKER_PAUSED → 可续跑（如 runCommand 超时），再次 POST /role/execute
  * - COMPLETED → 幂等，直接返回已有结果
  * - RUNNING → 拒绝（并发/重入由应用层配合锁处理）
  * - WAITING_APPROVAL → 禁止自动执行，等待 POST /task/approve
@@ -44,6 +46,9 @@ export function routeRoleExecution(
   }
   if (task.status === 'WAITING_APPROVAL') {
     return 'blocked_approval';
+  }
+  if (task.status === 'WORKER_PAUSED') {
+    return 'execute';
   }
   if (task.status === 'RUNNING') {
     return 'reject_running';

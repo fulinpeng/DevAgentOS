@@ -7,6 +7,7 @@ export type TaskStatus =
   | 'PENDING'
   | 'WAITING_APPROVAL'
   | 'RUNNING'
+  | 'WORKER_PAUSED'
   | 'COMPLETED'
   | 'FAILED';
 

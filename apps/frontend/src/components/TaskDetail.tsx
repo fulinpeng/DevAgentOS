@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
-import { apiGet, apiPost } from '../api/client'
+import { apiGet, apiPatch, apiPost } from '../api/client'
 import type {
   GeneratePlanResponse,
   TaskDetailResponse,
@@ -19,15 +19,44 @@ function getDescriptionPreview(params: unknown): string | undefined {
   return undefined
 }
 
-function TaskRow({ t, depth }: { t: TaskNode; depth: number }) {
+function TaskRow({
+  t,
+  depth,
+  queueIndex,
+  queueTotal,
+}: {
+  t: TaskNode
+  depth: number
+  /** 子任务在串行队列中的序号（1-based），主任务不传 */
+  queueIndex?: number
+  queueTotal?: number
+}) {
+  const rowBg =
+    t.status === 'RUNNING' || t.status === 'WORKER_PAUSED'
+      ? 'rgba(255, 193, 7, 0.12)'
+      : depth > 0
+        ? 'rgba(0,0,0,0.03)'
+        : undefined
+  const serialHint =
+    depth === 0
+      ? '—'
+      : queueIndex !== undefined && queueTotal !== undefined
+        ? queueIndex === 1
+          ? `队首（共 ${queueTotal} 步串行）`
+          : `上一子任务完成后执行（第 ${queueIndex}/${queueTotal} 步）`
+        : '—'
   return (
-    <tr style={{ background: depth > 0 ? 'rgba(0,0,0,0.03)' : undefined }}>
+    <tr style={{ background: rowBg }}>
+      <td>{depth === 0 ? '—' : t.sortOrder}</td>
       <td style={{ paddingLeft: `${8 + depth * 16}px` }}>
         {depth > 0 ? '└ ' : ''}
         {t.name}
       </td>
       <td>
         <code>{t.status}</code>
+      </td>
+      <td className="muted" style={{ fontSize: '0.88rem', maxWidth: 220 }}>
+        {serialHint}
       </td>
       <td>{t.role ?? '—'}</td>
       <td>{t.parameterSourceLabel ?? '—'}</td>
@@ -171,6 +200,34 @@ export function TaskDetail() {
     }
   }
 
+  async function continueWorker() {
+    if (!id) return
+    setBusy(true)
+    setActionErr(null)
+    try {
+      await apiPost(`/role/execute/${id}`)
+      await reload()
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function markRunningAsWorkerPaused() {
+    if (!id) return
+    setBusy(true)
+    setActionErr(null)
+    try {
+      await apiPatch(`/task/${id}/status`, { status: 'WORKER_PAUSED' })
+      await reload()
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (!id) {
     return <p>无效任务 ID</p>
   }
@@ -205,6 +262,16 @@ export function TaskDetail() {
     task.status === 'CREATED' &&
     Boolean(descriptionForPlan && descriptionForPlan.length > 0)
 
+  const workerPauseResult =
+    task.result !== null &&
+    typeof task.result === 'object' &&
+    !Array.isArray(task.result)
+      ? (task.result as Record<string, unknown>)
+      : null
+  const remainingStepCount = Array.isArray(workerPauseResult?.remainingSteps)
+    ? workerPauseResult.remainingSteps.length
+    : 0
+
   return (
     <div>
       <nav className="breadcrumb">
@@ -217,6 +284,58 @@ export function TaskDetail() {
             <strong>生成计划提示：</strong>
             {splitHintBanner}
           </p>
+        </div>
+      ) : null}
+
+      {task.status === 'WORKER_PAUSED' ? (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h2>Worker 暂停（可续跑）</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            常见原因：<code>runCommand</code> 超过约 10 分钟未结束（如网络/包管理器卡住）。任务已标为{' '}
+            <code>WORKER_PAUSED</code>，未终止整条工作流；处理完环境后可在下方继续。
+          </p>
+          {workerPauseResult?.pauseReason ? (
+            <p className="muted">
+              原因码：<code>{String(workerPauseResult.pauseReason)}</code>
+              {remainingStepCount > 0 ? (
+                <>
+                  {' '}
+                  · 待执行步骤数：<strong>{remainingStepCount}</strong>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          {actionErr ? <p className="error">{actionErr}</p> : null}
+          <div className="btn-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void continueWorker()}
+            >
+              继续执行（从断点续跑）
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {task.status === 'RUNNING' ? (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h2>长时间 RUNNING？</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            若前端仍显示 RUNNING 但实际已卡住（例如子进程已死锁），可手动标为 WORKER_PAUSED，再按暂停面板的续跑流程处理。
+          </p>
+          {actionErr ? <p className="error">{actionErr}</p> : null}
+          <div className="btn-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={busy}
+              onClick={() => void markRunningAsWorkerPaused()}
+            >
+              标为 WORKER_PAUSED（人工救急）
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -306,6 +425,31 @@ export function TaskDetail() {
 
       <div className="panel">
         <h2>任务树</h2>
+        {isRoot && children.length > 0 ? (
+          <div
+            className="muted"
+            style={{
+              marginBottom: '0.75rem',
+              padding: '0.65rem 0.75rem',
+              background: 'rgba(0,0,0,0.04)',
+              borderRadius: 6,
+              maxWidth: 720,
+            }}
+          >
+            <strong>串行执行说明：</strong>
+            Coordinator 按下方「顺序」列（对应数据库 <code>sortOrder</code>
+            ）<strong>一次只跑一个</strong>子任务；上一项为{' '}
+            <code>COMPLETED</code> 后才会启动下一项。因此多个子任务为{' '}
+            <code>PENDING</code> 时表示<strong>在排队</strong>，并非未调度。
+            若某项长期 <code>RUNNING</code>，整条链会停在该项。
+            <br />
+            <strong>中途报错去哪看：</strong>Worker 步骤级日志（如{' '}
+            <code>step_fail</code>、<code>step_success</code>）记在<strong>该子任务</strong>
+            名下。请点对应行的「查看」进入子任务页，滚动到「执行日志」；主任务页底部日志<strong>不含</strong>
+            各子任务的 Worker 明细。若子任务最终仍为 <code>COMPLETED</code>
+            ，说明后续步骤已把流程拉回成功，历史失败仍可在该子任务日志中查看。
+          </div>
+        ) : null}
         <p className="muted">
           当前节点：<strong>{task.name}</strong>（{task.id}）
         </p>
@@ -350,8 +494,10 @@ export function TaskDetail() {
         <table className="data-table">
           <thead>
             <tr>
+              <th>顺序</th>
               <th>名称</th>
               <th>状态</th>
+              <th>串行关系</th>
               <th>角色</th>
               <th>来源</th>
               <th>风险</th>
@@ -360,14 +506,29 @@ export function TaskDetail() {
           </thead>
           <tbody>
             <TaskRow t={task} depth={0} />
-            {children.map((c) => (
-              <TaskRow key={c.id} t={c} depth={1} />
+            {children.map((c, i) => (
+              <TaskRow
+                key={c.id}
+                t={c}
+                depth={1}
+                queueIndex={i + 1}
+                queueTotal={children.length}
+              />
             ))}
           </tbody>
         </table>
       </div>
 
-      <TaskLogs taskId={id} />
+      <TaskLogs
+        taskId={id}
+        scopeHint={
+          isRoot && children.length > 0
+            ? '当前为主任务：此处仅主任务相关 Redis 日志，不含各子任务的 Worker 步骤。若要看某子任务中途报错，请打开该子任务的详情页查看执行日志。'
+            : !isRoot
+              ? '此为当前子任务的执行日志。中途失败会留下 step_fail（及 meta 中的 error）；若之后又出现 step_success，说明后续步骤已恢复。'
+              : undefined
+        }
+      />
     </div>
   )
 }

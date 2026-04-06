@@ -45,6 +45,9 @@ export class CoordinatorService {
     if (children.length === 0) {
       // 已通过 PLAN_APPROVED 门禁，此处主任务不会是 COMPLETED
       const r = await this.roleService.executeTask(parent.id);
+      if (r.workerPaused) {
+        return { parent: r.task, executedTaskIds };
+      }
       if (!r.pausedForApproval && !r.idempotent) {
         executedTaskIds.push(parent.id);
       }
@@ -69,6 +72,9 @@ export class CoordinatorService {
         break;
       }
       const r = await this.roleService.executeTask(next.id);
+      if (r.workerPaused) {
+        break;
+      }
       if (r.pausedForApproval) {
         break;
       }

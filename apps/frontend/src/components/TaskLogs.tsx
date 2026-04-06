@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react'
 import { apiGet } from '../api/client'
 import type { LogEntry } from '../types/task'
 
-type Props = { taskId: string }
+type Props = {
+  taskId: string
+  /** 说明当前页是主任务还是子任务，避免误以为日志含全部子任务 */
+  scopeHint?: string
+}
 
-export function TaskLogs({ taskId }: Props) {
+export function TaskLogs({ taskId, scopeHint }: Props) {
   const [logs, setLogs] = useState<LogEntry[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
@@ -32,6 +36,11 @@ export function TaskLogs({ taskId }: Props) {
   return (
     <div className="panel logs-panel">
       <h3>执行日志（Redis）</h3>
+      {scopeHint ? (
+        <p className="muted" style={{ marginTop: 0, maxWidth: 640 }}>
+          {scopeHint}
+        </p>
+      ) : null}
       {logs.length === 0 ? (
         <p className="muted">暂无日志</p>
       ) : (
