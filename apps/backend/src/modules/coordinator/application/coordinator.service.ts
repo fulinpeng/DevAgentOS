@@ -37,7 +37,15 @@ export class CoordinatorService {
 
     const { parent, children } = bundle;
 
-    if (parent.status !== TaskStatus.PLAN_APPROVED) {
+    /**
+     * PLAN_APPROVED：正常计划通过后跑子任务。
+     * COMPLETED：工作流已全部跑完；若之后又「追加子任务」，主任务仍为 COMPLETED，
+     * 但存在未完成的子任务，需要 Coordinator 继续跑——须允许进入，否则会 409。
+     */
+    if (
+      parent.status !== TaskStatus.PLAN_APPROVED &&
+      parent.status !== TaskStatus.COMPLETED
+    ) {
       throw new ConflictException(
         `须先通过计划审批（PLAN_APPROVED）后再运行 Coordinator（当前主任务状态=${parent.status}）。请依次：POST /workflow/generate/:id → POST /task/approve-plan/:id`,
       );
@@ -46,7 +54,10 @@ export class CoordinatorService {
     const executedTaskIds: string[] = [];
 
     if (children.length === 0) {
-      // 已通过 PLAN_APPROVED 门禁，此处主任务不会是 COMPLETED
+      if (parent.status === TaskStatus.COMPLETED) {
+        return { parent, executedTaskIds };
+      }
+      // 无子任务时仅执行主任务本身（PLAN_APPROVED 且尚未拆子任务的场景）
       const r = await this.roleService.executeTask(parent.id, {
         chainFromCoordinator: true,
       });
