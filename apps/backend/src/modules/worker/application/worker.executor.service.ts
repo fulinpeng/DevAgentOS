@@ -31,28 +31,68 @@ function getDashScopeApiKey(config: ConfigService): string {
   ).trim();
 }
 
-function parseWorkerActionJson(text: string): {
+export type WorkerLlmStep = {
   action: string;
   args: Record<string, unknown>;
-} | null {
+};
+
+/**
+ * 解析 LLM 输出：优先 `steps[]`，否则兼容单条 `{ action, args }`。
+ */
+function parseWorkerLlmOutput(text: string): WorkerLlmStep[] | null {
   const trimmed = text.trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fence ? fence[1].trim() : trimmed;
   try {
     const o = JSON.parse(raw) as unknown;
-    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    if (!o || typeof o !== 'object' || Array.isArray(o)) {
+      return null;
+    }
     const r = o as Record<string, unknown>;
-    if (r.action === undefined || r.action === null) return null;
-    const action = String(r.action).trim();
-    if (!action) return null;
-    const args =
-      r.args && typeof r.args === 'object' && !Array.isArray(r.args)
-        ? (r.args as Record<string, unknown>)
-        : {};
-    return { action, args };
+
+    if (Array.isArray(r.steps) && r.steps.length > 0) {
+      const out: WorkerLlmStep[] = [];
+      for (const item of r.steps) {
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+          return null;
+        }
+        const s = item as Record<string, unknown>;
+        if (s.action === undefined || s.action === null) {
+          return null;
+        }
+        const action = String(s.action).trim();
+        if (!action) {
+          return null;
+        }
+        const args =
+          s.args && typeof s.args === 'object' && !Array.isArray(s.args)
+            ? (s.args as Record<string, unknown>)
+            : {};
+        out.push({ action, args });
+      }
+      return out;
+    }
+
+    if (r.action !== undefined && r.action !== null) {
+      const action = String(r.action).trim();
+      if (!action) {
+        return null;
+      }
+      const args =
+        r.args && typeof r.args === 'object' && !Array.isArray(r.args)
+          ? (r.args as Record<string, unknown>)
+          : {};
+      return [{ action, args }];
+    }
+
+    return null;
   } catch {
     return null;
   }
+}
+
+function stepsContainOnlyNoop(steps: WorkerLlmStep[]): boolean {
+  return steps.every((s) => normalizeAction(s.action) === 'noop');
 }
 
 @Injectable()
@@ -87,8 +127,6 @@ export class WorkerExecutorService implements IWorkerExecutor {
     const baseDir = toAbsoluteSandbox(workspaceRoot, rel);
 
     const apiKey = getDashScopeApiKey(this.config);
-    let action: string;
-    let args: Record<string, unknown>;
 
     if (!apiKey) {
       this.logger.log(
@@ -99,160 +137,228 @@ export class WorkerExecutorService implements IWorkerExecutor {
         time: new Date().toISOString(),
         meta: { reason: 'no_dashscope_or_qwen_api_key' },
       });
-      action = 'noop';
-      args = {};
-    } else {
-      if (!existsSync(baseDir)) {
-        try {
-          await mkdir(baseDir, { recursive: true });
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          return {
-            success: false,
-            result: { error: `worker_sandbox_mkdir_failed: ${msg}` },
-          };
-        }
-      }
-
-      const listRes = await this.toolExecutor.execute(
-        'listFiles',
-        { path: '.' },
-        baseDir,
-      );
-      const fileTree: string[] =
-        listRes.success && Array.isArray(listRes.data?.entries)
-          ? (listRes.data!.entries as string[])
-          : [];
-      if (!listRes.success) {
-        this.logger.warn(
-          `Worker 列出沙箱目录失败（将继续 LLM）：${listRes.error ?? 'unknown'}`,
-        );
-      }
-
-      await this.taskRedis.appendExecutionLog(task.id, {
-        step: 'worker_context_injected',
-        time: new Date().toISOString(),
-        meta: {
-          outputDirRelative: rel,
-          baseDir,
-          fileTree,
-          listFilesOk: listRes.success,
+      const toolResult = await this.toolExecutor.execute('noop', {}, baseDir);
+      return {
+        success: toolResult.success,
+        result: {
+          action: toolResult.tool,
+          ...(toolResult.data ?? {}),
+          ...(toolResult.error ? { error: toolResult.error } : {}),
         },
-      });
+      };
+    }
 
-      this.logger.log(
-        `Worker LLM 将调用：taskId=${task.id} files=${fileTree.length}`,
-      );
-
-      const user = buildWorkerUserContent({
-        taskId: task.id,
-        taskName: task.name,
-        role: task.role,
-        outputDirRelative: rel,
-        fileTree,
-      });
-      let raw: string;
+    if (!existsSync(baseDir)) {
       try {
-        raw = await this.llm.callLLM(WORKER_TOOL_SYSTEM_PROMPT, user);
+        await mkdir(baseDir, { recursive: true });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        this.logger.warn(`Worker LLM failed: ${msg}`);
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'worker_llm_error',
-          time: new Date().toISOString(),
-          meta: { message: msg.slice(0, 300) },
-        });
         return {
           success: false,
-          result: { error: `worker_llm_failed: ${msg}` },
+          result: { error: `worker_sandbox_mkdir_failed: ${msg}` },
         };
       }
-      const parsed = parseWorkerActionJson(raw);
-      if (!parsed) {
-        const clipped = clipLlmRawForRedis(this.config, raw);
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'worker_llm_invalid_json',
-          time: new Date().toISOString(),
-          meta: {
-            raw: clipped.text,
-            rawChars: clipped.totalChars,
-            rawTruncated: clipped.truncated,
-          },
-        });
-        return {
-          success: false,
-          result: {
-            error: 'worker_llm_invalid_json',
-            raw: clipped.text,
-            rawChars: clipped.totalChars,
-            rawTruncated: clipped.truncated,
-          },
-        };
-      }
-      action = parsed.action;
-      args = parsed.args;
-      const normalized = normalizeAction(action);
-      if (normalized === 'noop') {
-        const clipped = clipLlmRawForRedis(this.config, raw);
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'worker_llm_rejected_noop',
-          time: new Date().toISOString(),
-          meta: {
-            raw: clipped.text,
-            fileTree,
-            hint: '禁止 noop；请改用 writeFile/readFile/listFiles',
-          },
-        });
-        return {
-          success: false,
-          result: {
-            error: 'worker_llm_rejected_noop',
-            message:
-              '模型返回了 noop；当前策略要求必须产出可执行工具调用（如 writeFile）。',
-            raw: clipped.text,
-          },
-        };
-      }
+    }
 
-      const clippedOk = clipLlmRawForRedis(this.config, raw);
-      await this.taskRedis.appendExecutionLog(task.id, {
-        step: 'worker_llm_ok',
-        time: new Date().toISOString(),
-        meta: {
-          action,
-          raw: clippedOk.text,
-          rawChars: clippedOk.totalChars,
-          rawTruncated: clippedOk.truncated,
-          fileTree,
-        },
-      });
-      this.logger.log(
-        `Worker LLM 已接入：解析 action=${action} taskId=${task.id}`,
+    const listRes = await this.toolExecutor.execute(
+      'listFiles',
+      { path: '.' },
+      baseDir,
+    );
+    const fileTree: string[] =
+      listRes.success && Array.isArray(listRes.data?.entries)
+        ? (listRes.data!.entries as string[])
+        : [];
+    if (!listRes.success) {
+      this.logger.warn(
+        `Worker 列出沙箱目录失败（将继续 LLM）：${listRes.error ?? 'unknown'}`,
       );
     }
 
     await this.taskRedis.appendExecutionLog(task.id, {
-      step: 'tool_called',
+      step: 'worker_context_injected',
       time: new Date().toISOString(),
-      meta: { action, baseDir },
+      meta: {
+        outputDirRelative: rel,
+        baseDir,
+        fileTree,
+        listFilesOk: listRes.success,
+      },
     });
 
-    const toolResult = await this.toolExecutor.execute(action, args, baseDir);
+    this.logger.log(
+      `Worker LLM 将调用：taskId=${task.id} files=${fileTree.length}`,
+    );
 
-    if (toolResult.tool === 'writeFile' && toolResult.success) {
+    const user = buildWorkerUserContent({
+      taskId: task.id,
+      taskName: task.name,
+      role: task.role,
+      outputDirRelative: rel,
+      fileTree,
+    });
+    let raw: string;
+    try {
+      raw = await this.llm.callLLM(WORKER_TOOL_SYSTEM_PROMPT, user);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Worker LLM failed: ${msg}`);
       await this.taskRedis.appendExecutionLog(task.id, {
-        step: 'file_written',
+        step: 'worker_llm_error',
         time: new Date().toISOString(),
-        meta: toolResult.data,
+        meta: { message: msg.slice(0, 300) },
       });
+      return {
+        success: false,
+        result: { error: `worker_llm_failed: ${msg}` },
+      };
     }
 
+    const steps = parseWorkerLlmOutput(raw);
+    if (!steps || steps.length === 0) {
+      const clipped = clipLlmRawForRedis(this.config, raw);
+      await this.taskRedis.appendExecutionLog(task.id, {
+        step: 'worker_llm_invalid_json',
+        time: new Date().toISOString(),
+        meta: {
+          raw: clipped.text,
+          rawChars: clipped.totalChars,
+          rawTruncated: clipped.truncated,
+        },
+      });
+      return {
+        success: false,
+        result: {
+          error: 'worker_llm_invalid_json',
+          raw: clipped.text,
+          rawChars: clipped.totalChars,
+          rawTruncated: clipped.truncated,
+        },
+      };
+    }
+
+    if (stepsContainOnlyNoop(steps)) {
+      const clipped = clipLlmRawForRedis(this.config, raw);
+      await this.taskRedis.appendExecutionLog(task.id, {
+        step: 'worker_llm_rejected_noop',
+        time: new Date().toISOString(),
+        meta: {
+          raw: clipped.text,
+          fileTree,
+          hint: '禁止 noop；请使用 steps 产出 runCommand/writeFile/createDirectory 等',
+        },
+      });
+      return {
+        success: false,
+        result: {
+          error: 'worker_llm_rejected_noop',
+          message:
+            '模型返回了 noop；当前策略要求必须产出可执行步骤（如 runCommand、writeFile）。',
+          raw: clipped.text,
+        },
+      };
+    }
+
+    const clippedOk = clipLlmRawForRedis(this.config, raw);
+    await this.taskRedis.appendExecutionLog(task.id, {
+      step: 'worker_llm_ok',
+      time: new Date().toISOString(),
+      meta: {
+        stepCount: steps.length,
+        raw: clippedOk.text,
+        rawChars: clippedOk.totalChars,
+        rawTruncated: clippedOk.truncated,
+        fileTree,
+      },
+    });
+    this.logger.log(
+      `Worker LLM 已接入：steps=${steps.length} taskId=${task.id}`,
+    );
+
+    const stepResults: Array<{
+      index: number;
+      action: string;
+      success: boolean;
+      error?: string;
+    }> = [];
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const isoTime = new Date().toISOString();
+
+      await this.taskRedis.appendExecutionLog(task.id, {
+        step: 'step_start',
+        time: isoTime,
+        meta: { index: i, action: step.action, args: step.args },
+      });
+
+      const toolResult = await this.toolExecutor.execute(
+        step.action,
+        step.args,
+        baseDir,
+      );
+
+      if (toolResult.success) {
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'step_success',
+          time: new Date().toISOString(),
+          meta: {
+            index: i,
+            tool: toolResult.tool,
+            data: toolResult.data,
+          },
+        });
+        stepResults.push({
+          index: i,
+          action: toolResult.tool,
+          success: true,
+        });
+        if (toolResult.tool === 'writeFile') {
+          await this.taskRedis.appendExecutionLog(task.id, {
+            step: 'file_written',
+            time: new Date().toISOString(),
+            meta: toolResult.data,
+          });
+        }
+      } else {
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'step_fail',
+          time: new Date().toISOString(),
+          meta: {
+            index: i,
+            tool: toolResult.tool,
+            error: toolResult.error,
+          },
+        });
+        stepResults.push({
+          index: i,
+          action: toolResult.tool,
+          success: false,
+          error: toolResult.error,
+        });
+        return {
+          success: false,
+          result: {
+            mode: 'steps',
+            failedAtIndex: i,
+            steps: stepResults,
+            error: toolResult.error,
+            lastTool: toolResult.tool,
+          },
+        };
+      }
+    }
+
+    const last = stepResults[stepResults.length - 1];
     return {
-      success: toolResult.success,
+      success: true,
       result: {
-        action: toolResult.tool,
-        ...(toolResult.data ?? {}),
-        ...(toolResult.error ? { error: toolResult.error } : {}),
+        mode: 'steps',
+        stepsExecuted: steps.length,
+        steps: stepResults,
+        lastAction: last?.action,
+        /** 与旧版单 action 结果对齐，便于调用方 / 测试断言 */
+        action: last?.action,
       },
     };
   }

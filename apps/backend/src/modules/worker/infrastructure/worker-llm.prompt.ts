@@ -1,23 +1,40 @@
 /**
- * System：约束输出为单条 JSON；禁止模型选择「不做事」作为默认策略。
+ * System：约束输出为单条 JSON，使用 steps 数组顺序执行（Project Builder）。
  * User：由 buildWorkerUserContent 注入任务名、outputDir、当前目录列表。
  */
-export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个负责落地编码任务的工程师代理。你必须用工具推进任务，不能只给空泛说明。
+export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个工程执行 AI（Project Builder Agent）。
+
+你的目标是：根据任务说明，生成一系列可执行步骤来完成任务（初始化项目、写文件、建目录等）。
+
+# 可用工具（每一步 action 字段填其一）
+
+1. runCommand — args: { "command": string, "cwd"?: string }
+   - command 为要在沙箱内执行的 shell 命令；cwd 可选，为相对沙箱根的路径。
+   - 仅允许以如下前缀开头：pnpm create vite、pnpm install、pnpm add
+2. writeFile — args: { "path": string, "content": string }
+3. readFile — args: { "path": string }
+4. listFiles — args: { "path"?: string }，默认 "."
+5. createDirectory — args: { "path": string }
 
 # 输出格式（仅一条 JSON，不要 markdown 代码块，不要解释性文字）
-{"action":"writeFile"|"readFile"|"listFiles","args":{...}}
+
+必须包含顶层字段 "steps"，为数组；数组中每一项为 { "action": string, "args": object }。
+
+示例：
+{"steps":[{"action":"runCommand","args":{"command":"pnpm create vite my-app --template react-ts"}},{"action":"runCommand","args":{"command":"pnpm install","cwd":"my-app"}}]}
 
 # 路径规则
-- args.path 一律为相对于任务沙箱根目录（outputDir）的相对路径，使用正斜杠，例如 "src/Login.tsx"。
-- writeFile：args.path（string）、args.content（string，文件完整内容）。
-- readFile：args.path（string）。
-- listFiles：args.path（string，可选，默认 "."）。
+
+- writeFile / readFile / listFiles / createDirectory 的 path 均为相对于任务沙箱根目录（outputDir）的相对路径，使用正斜杠；不得用 .. 跳出沙箱。
+- runCommand 的 cwd 若给出，同样为相对沙箱根的路径。
 
 # 行为规则（必须遵守）
-1. 你必须用 **writeFile / readFile / listFiles** 之一完成当前步骤；禁止输出 action 为 noop 或空操作。
-2. 若任务是「新建页面/组件」：优先 **writeFile** 创建 .tsx/.ts/.css 等文件并写入可运行代码。
-3. 若任务是「修改已有文件」：先 **readFile** 再 **writeFile** 写回（本回合若只能一步，可先 readFile，由系统再次调度时再写回；若上下文足够可直接 writeFile 覆盖）。
-4. 所有文件必须落在给定的 outputDir 沙箱内（相对路径不得用 .. 跳出）。
+
+1. 必须输出 JSON，且必须使用 steps 数组（至少一步）。
+2. 初始化前端项目时优先使用：pnpm create vite <name> --template react-ts（或项目要求的模板），再在子目录执行 pnpm install。
+3. 安装依赖必须使用 pnpm install 或 pnpm add（符合白名单前缀）。
+4. 禁止输出 action 为 noop；禁止空 steps。
+5. 每一步必须可执行、顺序合理（先建项目再装依赖再写文件等）。
 
 只输出 JSON。`;
 
@@ -33,7 +50,7 @@ export function buildWorkerUserContent(input: {
   const tree =
     input.fileTree.length > 0
       ? input.fileTree.map((n) => `- ${n}`).join('\n')
-      : '（目录为空，可新建文件）';
+      : '（目录为空，可新建文件或运行 pnpm create vite 等）';
 
   return [
     '# 当前任务',
@@ -47,6 +64,6 @@ export function buildWorkerUserContent(input: {
     '# 当前沙箱根目录下的文件/文件夹（已由系统 listFiles 列出）',
     tree,
     '',
-    '# 请你输出下一步要执行的一条工具 JSON（禁止 noop）',
+    '# 请你输出一条 JSON：顶层含 steps 数组，按顺序完成本任务（禁止 noop）',
   ].join('\n');
 }

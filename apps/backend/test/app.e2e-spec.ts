@@ -238,7 +238,8 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
     const steps = getLogsForTask(subId).map((e) => e.step);
     expect(steps).toContain('risk_evaluated');
     expect(steps).toContain('role_execution_start');
-    expect(steps).toContain('tool_called');
+    expect(steps).toContain('step_start');
+    expect(steps).toContain('step_success');
     expect(steps).toContain('worker_called');
     expect(steps).toContain('completed');
   });
