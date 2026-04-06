@@ -29,6 +29,17 @@ function enrichTask(row: Task): PendingApprovalRow {
   };
 }
 
+/** 计划通过后：子任务仍带 source:llm，但不再要求二次「执行前审批」。 */
+function mergeApprovalGranted(parameters: unknown): Prisma.InputJsonValue {
+  const prev =
+    parameters !== null &&
+    typeof parameters === 'object' &&
+    !Array.isArray(parameters)
+      ? { ...(parameters as Record<string, unknown>) }
+      : {};
+  return { ...prev, approvalGranted: true };
+}
+
 @Injectable()
 export class TaskApprovalService {
   constructor(
@@ -77,9 +88,21 @@ export class TaskApprovalService {
       throw new ConflictException('没有子任务，无法批准计划');
     }
 
-    const updated = await this.prisma.task.update({
+    await this.prisma.$transaction([
+      ...parent.children.map((child) =>
+        this.prisma.task.update({
+          where: { id: child.id },
+          data: { parameters: mergeApprovalGranted(child.parameters) },
+        }),
+      ),
+      this.prisma.task.update({
+        where: { id: parentId },
+        data: { status: TaskStatus.PLAN_APPROVED },
+      }),
+    ]);
+
+    const updated = await this.prisma.task.findUniqueOrThrow({
       where: { id: parentId },
-      data: { status: TaskStatus.PLAN_APPROVED },
     });
 
     await this.taskRedis.appendExecutionLog(parentId, {

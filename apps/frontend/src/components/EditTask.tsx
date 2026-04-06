@@ -4,31 +4,16 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { apiGet, apiPatch } from '../api/client'
 import type { TaskDetailResponse } from '../types/task'
 
-function parseFeatures(raw: string): string[] | undefined {
-  const s = raw.trim()
-  if (!s) return undefined
-  return s
-    .split(/[,，]/)
-    .map((x) => x.trim())
-    .filter(Boolean)
-}
-
-function featuresToInput(params: unknown): string {
-  if (params && typeof params === 'object' && 'features' in params) {
-    const f = (params as { features?: unknown }).features
-    if (Array.isArray(f) && f.every((x) => typeof x === 'string')) {
-      return (f as string[]).join(', ')
-    }
+function stringFromParams(params: unknown, key: string): string {
+  if (params && typeof params === 'object' && key in params) {
+    const v = (params as Record<string, unknown>)[key]
+    if (typeof v === 'string') return v
   }
   return ''
 }
 
 function outputDirFromParams(params: unknown): string {
-  if (params && typeof params === 'object' && 'outputDir' in params) {
-    const v = (params as { outputDir?: unknown }).outputDir
-    if (typeof v === 'string') return v
-  }
-  return ''
+  return stringFromParams(params, 'outputDir')
 }
 
 export function EditTask() {
@@ -36,7 +21,9 @@ export function EditTask() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [name, setName] = useState('')
-  const [features, setFeatures] = useState('')
+  const [goal, setGoal] = useState('')
+  const [description, setDescription] = useState('')
+  const [projectType, setProjectType] = useState('')
   const [outputDir, setOutputDir] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -61,8 +48,11 @@ export function EditTask() {
           return
         }
         setName(task.name)
-        setFeatures(featuresToInput(task.parameters))
-        setOutputDir(outputDirFromParams(task.parameters))
+        const p = task.parameters
+        setGoal(stringFromParams(p, 'goal'))
+        setDescription(stringFromParams(p, 'description'))
+        setProjectType(stringFromParams(p, 'projectType'))
+        setOutputDir(outputDirFromParams(p))
         setLoading(false)
       })
       .catch((e: Error) => {
@@ -81,14 +71,25 @@ export function EditTask() {
     if (!id) return
     setErr(null)
     const n = name.trim()
+    const desc = description.trim()
     if (!n) {
       setErr('请填写任务名称')
       return
     }
-    const featureList = parseFeatures(features) ?? []
+    if (!desc) {
+      setErr('请填写详细需求 description')
+      return
+    }
     setBusy(true)
     try {
-      const params: Record<string, unknown> = { features: featureList }
+      const params: Record<string, unknown> = {
+        description: desc,
+        goal: goal.trim() || n,
+      }
+      const pt = projectType.trim()
+      if (pt) {
+        params.projectType = pt
+      }
       const od = outputDir.trim()
       if (od) {
         params.outputDir = od
@@ -134,7 +135,7 @@ export function EditTask() {
       <div className="panel">
         <h2>编辑任务草稿</h2>
         <p className="muted">
-          仅 <code>CREATED</code> 主任务可改名称、features 与 outputDir；保存后合并写入
+          仅 <code>CREATED</code> 主任务可改名称、goal、description、projectType 与 outputDir；保存后写入
           parameters。
         </p>
 
@@ -154,12 +155,35 @@ export function EditTask() {
           </label>
 
           <label className="form-field">
-            <span>Features（生成计划时必填，逗号分隔）</span>
+            <span>目标 goal（可选，默认与名称相同）</span>
             <input
               type="text"
-              value={features}
-              onChange={(e) => setFeatures(e.target.value)}
-              placeholder="login, dashboard"
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              disabled={busy}
+              autoComplete="off"
+            />
+          </label>
+
+          <label className="form-field">
+            <span>详细需求 description（必填）</span>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={5}
+              required
+              disabled={busy}
+              autoComplete="off"
+            />
+          </label>
+
+          <label className="form-field">
+            <span>项目类型 projectType（可选）</span>
+            <input
+              type="text"
+              value={projectType}
+              onChange={(e) => setProjectType(e.target.value)}
+              placeholder="web-frontend"
               disabled={busy}
               autoComplete="off"
             />

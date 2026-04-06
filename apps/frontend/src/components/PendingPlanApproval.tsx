@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet, apiPost } from '../api/client'
-import type { TaskNode } from '../types/task'
-import { riskShort } from './RiskBadge'
+import type { PendingPlanApprovalRow } from '../types/task'
 
-export function PendingApproval() {
-  const [rows, setRows] = useState<TaskNode[] | null>(null)
+export function PendingPlanApproval() {
+  const [rows, setRows] = useState<PendingPlanApprovalRow[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setErr(null)
-    return apiGet<TaskNode[]>('/task/pending-approval')
+    return apiGet<PendingPlanApprovalRow[]>('/task/pending-plan-approval')
       .then(setRows)
       .catch((e: Error) => setErr(e.message))
   }, [])
@@ -20,11 +19,11 @@ export function PendingApproval() {
     void load()
   }, [load])
 
-  async function approve(id: string) {
+  async function approvePlan(id: string) {
     setBusyId(id)
     setErr(null)
     try {
-      await apiPost(`/task/approve/${id}`)
+      await apiPost(`/task/approve-plan/${id}`)
       await load()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -33,11 +32,11 @@ export function PendingApproval() {
     }
   }
 
-  async function reject(id: string) {
+  async function rejectPlan(id: string) {
     setBusyId(id)
     setErr(null)
     try {
-      await apiPost(`/task/reject/${id}`)
+      await apiPost(`/task/reject-plan/${id}`)
       await load()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -60,52 +59,46 @@ export function PendingApproval() {
       </nav>
 
       <div className="panel">
-        <h2>待审批执行（子任务）</h2>
+        <h2>待审计划（主任务）</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          对应后端 <code>WAITING_APPROVAL</code>：高风险/中风险子任务需人工批准后再跑 Worker。
+          对应后端 <code>WAITING_PLAN_APPROVAL</code>：已生成子任务，等待批准或驳回计划。
         </p>
         {err ? <p className="error">{err}</p> : null}
         <table className="data-table">
           <thead>
             <tr>
-              <th>名称</th>
-              <th>来源</th>
-              <th>风险</th>
-              <th>审批说明</th>
+              <th>主任务</th>
+              <th>子任务数</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5}>暂无待审批任务</td>
+                <td colSpan={3}>暂无待审计划</td>
               </tr>
             ) : (
               rows.map((r) => (
                 <tr key={r.id}>
                   <td>{r.name}</td>
-                  <td>{r.parameterSourceLabel ?? '—'}</td>
-                  <td>{r.riskLevel ? riskShort(r.riskLevel) : '—'}</td>
-                  <td className="muted" style={{ maxWidth: 280 }}>
-                    {r.approvalReason ?? '—'}
-                  </td>
+                  <td>{r.children?.length ?? 0}</td>
                   <td>
                     <div className="btn-row">
                       <button
                         type="button"
                         className="btn btn-primary"
                         disabled={busyId === r.id}
-                        onClick={() => void approve(r.id)}
+                        onClick={() => void approvePlan(r.id)}
                       >
-                        批准
+                        批准计划
                       </button>
                       <button
                         type="button"
                         className="btn btn-danger"
                         disabled={busyId === r.id}
-                        onClick={() => void reject(r.id)}
+                        onClick={() => void rejectPlan(r.id)}
                       >
-                        拒绝
+                        驳回计划
                       </button>
                       <Link to={`/task/${r.id}`}>详情</Link>
                     </div>

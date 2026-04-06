@@ -63,6 +63,26 @@ export class TaskRepository {
     });
   }
 
+  async mergeTaskParameters(
+    id: string,
+    patch: Record<string, unknown>,
+  ): Promise<Task> {
+    const prev = await this.findById(id);
+    if (!prev) {
+      throw new Error(`Task ${id} not found`);
+    }
+    const base =
+      prev.parameters !== null &&
+      typeof prev.parameters === 'object' &&
+      !Array.isArray(prev.parameters)
+        ? { ...(prev.parameters as Record<string, unknown>) }
+        : {};
+    return this.prisma.task.update({
+      where: { id },
+      data: { parameters: { ...base, ...patch } as Prisma.InputJsonValue },
+    });
+  }
+
   async countChildren(parentId: string): Promise<number> {
     return this.prisma.task.count({ where: { parentId } });
   }

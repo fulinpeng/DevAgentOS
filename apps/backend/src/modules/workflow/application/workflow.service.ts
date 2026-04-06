@@ -8,8 +8,11 @@ import { ConfigService } from '@nestjs/config';
 import { Task, TaskStatus } from '@prisma/client';
 import { clipLlmRawForRedis } from '../../../infrastructure/llm-log-meta';
 import { TaskRedis } from '../../../infrastructure/redis/task.redis';
-import { WORKFLOW_SPLIT_PROMPT_VERSION } from '../domain/task-split.constants';
-import { splitTask } from '../domain/task-split';
+import {
+  buildFallbackSubTaskSpecs,
+  parseWorkflow,
+  workflowToSubTaskSpecs,
+} from '../domain/task-split';
 import { WorkflowLlmService } from '../infrastructure/llm.service';
 import { TaskRepository } from '../infrastructure/task.repository';
 
@@ -22,10 +25,30 @@ export type CreateTaskResult = {
 
 const REDIS_STATUS_PENDING = 'pending';
 
+function readStringParam(
+  parameters: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const v = parameters?.[key];
+  return typeof v === 'string' ? v.trim() : undefined;
+}
+
+function readStringArrayParam(
+  parameters: Record<string, unknown> | undefined,
+  key: string,
+): string[] | undefined {
+  const v = parameters?.[key];
+  if (!Array.isArray(v)) {
+    return undefined;
+  }
+  const out = v.filter((x): x is string => typeof x === 'string').map((s) => s.trim());
+  return out.length > 0 ? out : undefined;
+}
+
 /**
  * 应用服务：
  * - 仅创建需求（CREATED，无子任务）
- * - 生成计划（Workflow AI 拆子任务 → WAITING_PLAN_APPROVAL，不执行）
+ * - 生成计划（Workflow Planner → 子任务 → WAITING_PLAN_APPROVAL，不执行）
  */
 @Injectable()
 export class WorkflowService {
@@ -51,7 +74,7 @@ export class WorkflowService {
   }
 
   /**
-   * Step2：对 CREATED 主任务调用 LLM 拆分，生成子任务并冻结为待审计划。
+   * Step2：对 CREATED 主任务调用 LLM Workflow Planner，生成子任务并冻结为待审计划。
    */
   async generatePlan(parentId: string): Promise<CreateTaskResult> {
     const parent = await this.taskRepository.findById(parentId);
@@ -74,7 +97,6 @@ export class WorkflowService {
       );
     }
 
-    const name = parent.name;
     const parameters =
       parent.parameters !== null &&
       typeof parent.parameters === 'object' &&
@@ -82,41 +104,85 @@ export class WorkflowService {
         ? (parent.parameters as Record<string, unknown>)
         : undefined;
 
-    const features = parameters?.features;
-    const featureList = Array.isArray(features)
-      ? features.filter((x): x is string => typeof x === 'string')
-      : [];
-    if (featureList.length === 0) {
+    const goal = readStringParam(parameters, 'goal') ?? parent.name.trim();
+    const description = readStringParam(parameters, 'description');
+    if (!description) {
       throw new BadRequestException(
-        '请先在任务参数中提供非空 features（或创建任务时填写），用于生成拆分计划',
+        '请先在任务 parameters 中提供非空 description（详细自然语言需求），用于生成 Workflow 计划',
       );
     }
 
-    let llmRaw: string;
-    try {
-      llmRaw = await this.llmService.callSplitTaskJson(name, featureList);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      throw new BadRequestException(
-        `生成计划必须成功调用 LLM：${msg}。请配置 DASHSCOPE_API_KEY（或 QWEN_API_KEY），并检查 LLM_BASE_URL 与网络。`,
-      );
-    }
+    const projectType = readStringParam(parameters, 'projectType');
+    const techStack = readStringArrayParam(parameters, 'techStack');
+    const constraints = readStringArrayParam(parameters, 'constraints');
 
     const llmModel = this.config.get<string>('LLM_MODEL', 'qwen-turbo');
-    const subSpecs = splitTask({ name, parameters }, llmRaw, {
-      llmModel,
-      promptVersion: WORKFLOW_SPLIT_PROMPT_VERSION,
+
+    const raw = await this.llmService.callWorkflowPlanner({
+      goal,
+      description,
+      ...(projectType ? { projectType } : {}),
+      ...(techStack ? { techStack } : {}),
+      ...(constraints ? { constraints } : {}),
     });
-    if (subSpecs.length === 0) {
-      throw new BadRequestException(
-        'LLM 返回无法解析为合法子任务列表（或子任务未通过校验）。请调整 features / 重试生成计划。',
-      );
+
+    if (raw?.trim()) {
+      const clipped = clipLlmRawForRedis(this.config, raw.trim());
+      await this.taskRedis.appendExecutionLog(parentId, {
+        step: 'workflow_llm_raw',
+        time: new Date().toISOString(),
+        meta: {
+          llmRaw: clipped.text,
+          llmRawChars: clipped.totalChars,
+          llmRawTruncated: clipped.truncated,
+        },
+      });
     }
+
+    let parsedOk = false;
+    const workflow = raw ? parseWorkflow(raw) : null;
+    if (workflow) {
+      parsedOk = true;
+      await this.taskRedis.appendExecutionLog(parentId, {
+        step: 'workflow_parsed_success',
+        time: new Date().toISOString(),
+        meta: { taskCount: workflow.tasks.length },
+      });
+    } else {
+      await this.taskRedis.appendExecutionLog(parentId, {
+        step: 'workflow_parsed_failed',
+        time: new Date().toISOString(),
+        meta: {
+          hadRaw: Boolean(raw?.trim()),
+        },
+      });
+    }
+
+    const subSpecs = parsedOk
+      ? workflowToSubTaskSpecs(workflow!, parent.name, { llmModel })
+      : buildFallbackSubTaskSpecs(
+          parent.name,
+          goal,
+          description,
+          projectType ?? '',
+          llmModel,
+        );
 
     const subTasks = await this.taskRepository.createSubTasks(
       parent.id,
       subSpecs,
     );
+
+    const auditedProjectType = parsedOk
+      ? workflow!.projectType
+      : (projectType ?? '').trim() || 'unknown';
+    await this.taskRepository.mergeTaskParameters(parent.id, {
+      goal,
+      description,
+      projectType: auditedProjectType,
+      workflowPlannerUsed: true,
+      workflowParsed: parsedOk,
+    });
 
     const parentTask = await this.taskRepository.updateTaskStatus(
       parent.id,
@@ -127,27 +193,23 @@ export class WorkflowService {
     for (const sub of subTasks) {
       await this.taskRedis.setTaskStatus(sub.id, REDIS_STATUS_PENDING);
     }
-    const llmTrim = llmRaw?.trim() ?? '';
-    const clipped = llmTrim
-      ? clipLlmRawForRedis(this.config, llmTrim)
-      : null;
+
     await this.taskRedis.appendExecutionLog(parentTask.id, {
       step: 'plan_generated',
       time: new Date().toISOString(),
       meta: {
         subTaskCount: subTasks.length,
-        llmSplitUsed: Boolean(llmTrim),
-        ...(clipped
-          ? {
-              /** 模型返回的完整原文（默认不截断，见 LLM_RAW_LOG_MAX_CHARS） */
-              llmRaw: clipped.text,
-              llmRawChars: clipped.totalChars,
-              llmRawTruncated: clipped.truncated,
-            }
-          : {}),
+        workflowParsed: parsedOk,
+        fallbackPlan: !parsedOk,
       },
     });
 
-    return { parentTask, subTasks };
+    return {
+      parentTask,
+      subTasks,
+      splitHint: parsedOk
+        ? undefined
+        : 'LLM 返回无法解析为合法 Workflow，已使用内置两任务回退；可检查日志 workflow_parsed_failed。',
+    };
   }
 }

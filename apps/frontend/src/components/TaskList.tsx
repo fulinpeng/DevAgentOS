@@ -34,7 +34,9 @@ export function TaskList() {
       <nav className="breadcrumb" style={{ marginBottom: '0.75rem' }}>
         <Link to="/new-task">新建任务</Link>
         <span className="muted"> · </span>
-        <Link to="/pending-approval">待审批队列 →</Link>
+        <Link to="/pending-plan-approval">待审计划</Link>
+        <span className="muted"> · </span>
+        <Link to="/pending-approval">待审批执行 →</Link>
       </nav>
       <h2>任务列表（主任务）</h2>
       <p className="muted" style={{ marginBottom: '0.75rem' }}>

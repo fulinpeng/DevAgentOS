@@ -2,7 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   SPLIT_TASK_SYSTEM_PROMPT,
+  type WorkflowPlannerInput,
   buildSplitTaskUserPayload,
+  buildWorkflowSystemPrompt,
+  buildWorkflowUserPrompt,
 } from './split-task.prompt';
 
 const DEFAULT_COMPAT_URL =
@@ -21,7 +24,7 @@ function getDashScopeApiKey(config: ConfigService): string {
 
 /**
  * Workflow 专用 LLM 网关：DashScope OpenAI 兼容接口，只负责文本补全，不执行业务。
- * 拆任务须调用 {@link callSplitTaskJson}；不再提供「无 LLM 时规则拆分」。
+ * 生成计划请使用 {@link callWorkflowPlanner}；旧版 {@link callSplitTaskJson} 仅保留兼容。
  */
 @Injectable()
 export class WorkflowLlmService {
@@ -107,4 +110,20 @@ export class WorkflowLlmService {
     return this.callLLM(SPLIT_TASK_SYSTEM_PROMPT, user);
   }
 
+  /**
+   * Workflow Planner：返回完整 Workflow JSON 字符串；网络/鉴权/解析失败时返回 null。
+   */
+  async callWorkflowPlanner(
+    input: WorkflowPlannerInput,
+  ): Promise<string | null> {
+    try {
+      const systemPrompt = buildWorkflowSystemPrompt();
+      const userPrompt = buildWorkflowUserPrompt(input);
+      return await this.callLLM(systemPrompt, userPrompt);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`callWorkflowPlanner failed: ${msg}`);
+      return null;
+    }
+  }
 }

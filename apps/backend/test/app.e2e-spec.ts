@@ -62,6 +62,31 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .useValue(mock)
       .overrideProvider(WorkflowLlmService)
       .useValue({
+        callWorkflowPlanner: async () =>
+          JSON.stringify({
+            goal: 'build a web page',
+            description:
+              'Login and dashboard with React; output under apps/frontend/src.',
+            projectType: 'web-frontend',
+            tasks: [
+              {
+                id: 'task_1',
+                name: 'Scaffold UI shell',
+                description:
+                  'Create layout and routing placeholders under src/ for login and dashboard routes.',
+                type: 'setup',
+                dependsOn: [],
+              },
+              {
+                id: 'task_2',
+                name: 'Login and dashboard pages',
+                description:
+                  'Implement login form and dashboard stub components with TypeScript.',
+                type: 'feature',
+                dependsOn: ['task_1'],
+              },
+            ],
+          }),
         callSplitTaskJson: async () =>
           JSON.stringify([
             { name: 'build login page', role: 'frontend' },
@@ -103,8 +128,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .send({
         name: 'build a web page',
         parameters: {
-          features: ['login', 'dashboard'],
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
           outputDir: 'apps/frontend/src',
+          projectType: 'web-frontend',
         },
       })
       .expect(201);
@@ -149,8 +176,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .send({
         name: 'build a web page',
         parameters: {
-          features: ['login', 'dashboard'],
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
           outputDir: 'apps/frontend/src',
+          projectType: 'web-frontend',
         },
       })
       .expect(201);
@@ -177,8 +206,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .send({
         name: 'build a web page',
         parameters: {
-          features: ['login', 'dashboard'],
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
           outputDir: 'apps/frontend/src',
+          projectType: 'web-frontend',
         },
       })
       .expect(201);
@@ -217,7 +248,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .post('/task/create')
       .send({
         name: 'x',
-        parameters: { features: ['a'], outputDir: 'apps/frontend/src' },
+        parameters: {
+          description: 'Single feature scaffolding.',
+          outputDir: 'apps/frontend/src',
+        },
       })
       .expect(201);
 
@@ -247,7 +281,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .post('/task/create')
       .send({
         name: 'x',
-        parameters: { features: ['a'], outputDir: 'apps/frontend/src' },
+        parameters: {
+          description: 'Single feature scaffolding.',
+          outputDir: 'apps/frontend/src',
+        },
       })
       .expect(201);
 
@@ -276,8 +313,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .send({
         name: 'build a web page',
         parameters: {
-          features: ['login', 'dashboard'],
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
           outputDir: 'apps/frontend/src',
+          projectType: 'web-frontend',
         },
       })
       .expect(201);
@@ -340,8 +379,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .send({
         name: 'build a web page',
         parameters: {
-          features: ['login', 'dashboard'],
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
           outputDir: 'apps/frontend/src',
+          projectType: 'web-frontend',
         },
       })
       .expect(201);
@@ -384,8 +425,10 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .send({
         name: 'build a web page',
         parameters: {
-          features: ['login', 'dashboard'],
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
           outputDir: 'apps/frontend/src',
+          projectType: 'web-frontend',
         },
       })
       .expect(201);

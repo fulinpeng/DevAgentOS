@@ -1,5 +1,10 @@
 import { MAX_LLM_SUBTASKS } from './task-split.constants';
-import { aiSplitTask, splitTask, splitTaskRuleBased } from './task-split';
+import {
+  aiSplitTask,
+  parseWorkflow,
+  splitTask,
+  splitTaskRuleBased,
+} from './task-split';
 
 describe('splitTaskRuleBased', () => {
   it('按 features 拆分为子任务（仅测试保留，生成计划已不再使用）', () => {
@@ -140,6 +145,110 @@ describe('aiSplitTask', () => {
       aiSplitTask(JSON.stringify([{ name: 'a' }]), 'p', {
         featureTokens: ['a'],
       }),
+    ).toBeNull();
+  });
+});
+
+describe('parseWorkflow', () => {
+  const valid = {
+    goal: 'g',
+    description: 'd',
+    projectType: 'web-frontend',
+    tasks: [
+      {
+        id: 'a',
+        name: 'n1',
+        description: 'long desc one',
+        type: 'setup',
+        dependsOn: [],
+      },
+      {
+        id: 'b',
+        name: 'n2',
+        description: 'long desc two',
+        type: 'feature',
+        dependsOn: ['a'],
+      },
+    ],
+  };
+
+  it('合法 JSON 解析成功', () => {
+    const w = parseWorkflow(JSON.stringify(valid));
+    expect(w).not.toBeNull();
+    expect(w!.tasks).toHaveLength(2);
+    expect(w!.tasks[0].id).toBe('a');
+    expect(w!.tasks[1].dependsOn).toEqual(['a']);
+  });
+
+  it('markdown 代码块可剥离', () => {
+    const w = parseWorkflow(
+      '```json\n' + JSON.stringify(valid) + '\n```',
+    );
+    expect(w).not.toBeNull();
+  });
+
+  it('tasks 少于 2 → null', () => {
+    expect(
+      parseWorkflow(
+        JSON.stringify({
+          ...valid,
+          tasks: [valid.tasks[0]],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('无依赖边（全空 dependsOn）→ null', () => {
+    expect(
+      parseWorkflow(
+        JSON.stringify({
+          ...valid,
+          tasks: [
+            { ...valid.tasks[0], dependsOn: [] },
+            { ...valid.tasks[1], dependsOn: [], id: 'b2' },
+          ],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('非法 type → null', () => {
+    expect(
+      parseWorkflow(
+        JSON.stringify({
+          ...valid,
+          tasks: [
+            valid.tasks[0],
+            { ...valid.tasks[1], type: 'invalid' },
+          ],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('循环依赖 → null', () => {
+    expect(
+      parseWorkflow(
+        JSON.stringify({
+          ...valid,
+          tasks: [
+            {
+              id: 'x',
+              name: 'a',
+              description: 'd',
+              type: 'setup',
+              dependsOn: ['y'],
+            },
+            {
+              id: 'y',
+              name: 'b',
+              description: 'd',
+              type: 'feature',
+              dependsOn: ['x'],
+            },
+          ],
+        }),
+      ),
     ).toBeNull();
   });
 });

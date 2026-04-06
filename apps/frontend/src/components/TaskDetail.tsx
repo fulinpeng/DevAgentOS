@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { apiGet, apiPost } from '../api/client'
-import type { TaskDetailResponse, TaskNode } from '../types/task'
+import type {
+  GeneratePlanResponse,
+  TaskDetailResponse,
+  TaskNode,
+} from '../types/task'
 import { RiskBadge } from './RiskBadge'
 import { TaskLogs } from './TaskLogs'
 
-function getFeaturesFromParameters(params: unknown): string[] | undefined {
-  if (params && typeof params === 'object' && 'features' in params) {
-    const f = (params as { features?: unknown }).features
-    if (Array.isArray(f) && f.every((x) => typeof x === 'string')) {
-      return f as string[]
+function getDescriptionPreview(params: unknown): string | undefined {
+  if (params && typeof params === 'object' && 'description' in params) {
+    const d = (params as { description?: unknown }).description
+    if (typeof d === 'string' && d.trim().length > 0) {
+      return d.trim()
     }
   }
   return undefined
@@ -38,11 +42,18 @@ function TaskRow({ t, depth }: { t: TaskNode; depth: number }) {
 export function TaskDetail() {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
-  const splitHint = (location.state as { splitHint?: string } | null)?.splitHint
+  const splitHintFromNav = (location.state as { splitHint?: string } | null)
+    ?.splitHint
+  const [splitHintFromGenerate, setSplitHintFromGenerate] = useState<
+    string | null
+  >(null)
   const [data, setData] = useState<TaskDetailResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  const splitHintBanner =
+    splitHintFromGenerate ?? splitHintFromNav ?? undefined
 
   const reload = useCallback(() => {
     if (!id) return Promise.resolve()
@@ -67,8 +78,8 @@ export function TaskDetail() {
 
   const isRoot = data?.task.parentId === null
 
-  const featuresForPlan = useMemo(
-    () => (data ? getFeaturesFromParameters(data.task.parameters) : undefined),
+  const descriptionForPlan = useMemo(
+    () => (data ? getDescriptionPreview(data.task.parameters) : undefined),
     [data],
   )
 
@@ -76,8 +87,12 @@ export function TaskDetail() {
     if (!id) return
     setBusy(true)
     setActionErr(null)
+    setSplitHintFromGenerate(null)
     try {
-      await apiPost(`/workflow/generate/${id}`)
+      const res = await apiPost<GeneratePlanResponse>(
+        `/workflow/generate/${id}`,
+      )
+      setSplitHintFromGenerate(res.splitHint ?? null)
       await reload()
     } catch (e) {
       setActionErr(e instanceof Error ? e.message : String(e))
@@ -188,7 +203,7 @@ export function TaskDetail() {
   const canGeneratePlan =
     isRoot &&
     task.status === 'CREATED' &&
-    (featuresForPlan?.length ?? 0) > 0
+    Boolean(descriptionForPlan && descriptionForPlan.length > 0)
 
   return (
     <div>
@@ -196,11 +211,11 @@ export function TaskDetail() {
         <Link to="/">← 列表</Link>
       </nav>
 
-      {splitHint ? (
+      {splitHintBanner ? (
         <div className="panel" style={{ marginBottom: 16 }}>
           <p className="muted" style={{ margin: 0 }}>
-            <strong>拆分提示：</strong>
-            {splitHint}
+            <strong>生成计划提示：</strong>
+            {splitHintBanner}
           </p>
         </div>
       ) : null}
@@ -211,22 +226,25 @@ export function TaskDetail() {
           {task.status === 'CREATED' ? (
             <p className="muted" style={{ marginTop: 0 }}>
               <Link to={`/task/${task.id}/edit`}>编辑草稿</Link>
-              （名称、features、outputDir）
+              （名称、goal、description、projectType、outputDir）
             </p>
           ) : null}
           <p className="muted">
             状态：<code>{task.status}</code>
-            {featuresForPlan?.length ? (
+            {descriptionForPlan ? (
               <>
                 {' '}
-                · features: {featuresForPlan.join(', ')}
+                · 已填详细需求（预览）：{' '}
+                {descriptionForPlan.length > 120
+                  ? `${descriptionForPlan.slice(0, 120)}…`
+                  : descriptionForPlan}
               </>
             ) : (
               <>
                 {' '}
-                · 未配置 features，请先
+                · 未填写 parameters.description，请先
                 <Link to={`/task/${task.id}/edit`}> 编辑任务草稿 </Link>
-                填写 features 后再生成计划
+                补充自然语言需求后再生成计划
               </>
             )}
           </p>
@@ -239,7 +257,7 @@ export function TaskDetail() {
                 disabled={busy || !canGeneratePlan}
                 title={
                   !canGeneratePlan
-                    ? '需要 parameters.features 非空'
+                    ? '需要 parameters.description 非空（自然语言详细需求）'
                     : undefined
                 }
                 onClick={() => void generatePlan()}
@@ -269,14 +287,9 @@ export function TaskDetail() {
             ) : null}
             {task.status === 'PLAN_APPROVED' ? (
               <>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled
-                  title="执行计划独立 API 尚未接入；当前请使用「运行 Coordinator」启动子任务链"
-                >
-                  执行计划
-                </button>
+                <p className="muted" style={{ margin: '0 0 8px', maxWidth: 520 }}>
+                  子任务按 sortOrder / 依赖顺序由后端 Coordinator 依次调用 Role/Worker 执行；请点下方按钮启动。
+                </p>
                 <button
                   type="button"
                   className="btn btn-primary"

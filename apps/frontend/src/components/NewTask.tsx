@@ -4,19 +4,12 @@ import { Link, useNavigate } from 'react-router-dom'
 import { apiPost } from '../api/client'
 import type { CreateTaskResponse } from '../types/task'
 
-function parseFeatures(raw: string): string[] | undefined {
-  const s = raw.trim()
-  if (!s) return undefined
-  return s
-    .split(/[,，]/)
-    .map((x) => x.trim())
-    .filter(Boolean)
-}
-
 export function NewTask() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
-  const [features, setFeatures] = useState('')
+  const [goal, setGoal] = useState('')
+  const [description, setDescription] = useState('')
+  const [projectType, setProjectType] = useState('')
   const [outputDir, setOutputDir] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -25,28 +18,38 @@ export function NewTask() {
     e.preventDefault()
     setErr(null)
     const n = name.trim()
+    const desc = description.trim()
     if (!n) {
       setErr('请填写任务名称')
       return
     }
-    const featureList = parseFeatures(features)
+    if (!desc) {
+      setErr('请填写详细需求（生成计划时由 LLM 按自然语言拆解）')
+      return
+    }
     setBusy(true)
     try {
-      const params: Record<string, unknown> = {}
-      if (featureList && featureList.length > 0) {
-        params.features = featureList
+      const params: Record<string, unknown> = {
+        description: desc,
+      }
+      const g = goal.trim()
+      if (g) {
+        params.goal = g
+      } else {
+        params.goal = n
+      }
+      const pt = projectType.trim()
+      if (pt) {
+        params.projectType = pt
       }
       const od = outputDir.trim()
       if (od) {
         params.outputDir = od
       }
-      const body: { name: string; parameters?: Record<string, unknown> } = {
+      const res = await apiPost<CreateTaskResponse>('/task/create', {
         name: n,
-      }
-      if (Object.keys(params).length > 0) {
-        body.parameters = params
-      }
-      const res = await apiPost<CreateTaskResponse>('/task/create', body)
+        parameters: params,
+      })
       navigate(`/task/${res.parentTask.id}`, { replace: true })
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -64,8 +67,8 @@ export function NewTask() {
       <div className="panel">
         <h2>新建任务</h2>
         <p className="muted">
-          仅创建需求（CREATED）。生成子任务请点击详情页「生成计划」；填写 features 后生成时会走
-          LLM 拆分（需 DASHSCOPE_API_KEY）。
+          仅创建需求（CREATED）。在详情页点击「生成计划」时，后端会用 LLM 生成结构化 Workflow（需配置
+          DASHSCOPE_API_KEY）。请用自然语言写清需求，无需再填逗号分隔的 features。
         </p>
 
         <form className="new-task-form" onSubmit={(e) => void onSubmit(e)}>
@@ -85,12 +88,37 @@ export function NewTask() {
           </label>
 
           <label className="form-field">
-            <span>Features（生成计划时必填，逗号分隔）</span>
+            <span>目标 goal（可选，默认与名称相同）</span>
             <input
               type="text"
-              value={features}
-              onChange={(e) => setFeatures(e.target.value)}
-              placeholder="login, dashboard"
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              placeholder="例如：交付可登录的后台与仪表盘"
+              disabled={busy}
+              autoComplete="off"
+            />
+          </label>
+
+          <label className="form-field">
+            <span>详细需求 description（必填）</span>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="用自然语言写清功能、技术栈、目录约定等，供 LLM 生成执行计划。"
+              rows={5}
+              required
+              disabled={busy}
+              autoComplete="off"
+            />
+          </label>
+
+          <label className="form-field">
+            <span>项目类型 projectType（可选，如 web-frontend）</span>
+            <input
+              type="text"
+              value={projectType}
+              onChange={(e) => setProjectType(e.target.value)}
+              placeholder="web-frontend"
               disabled={busy}
               autoComplete="off"
             />

@@ -42,3 +42,18 @@ export type CreateTaskResponse = {
   parentTask: { id: string; name: string; status: string }
   subTasks: Array<{ id: string; name: string; status: string }>
 }
+
+/** POST /workflow/generate/:id */
+export type GeneratePlanResponse = {
+  parentTask: { id: string; name: string; status: string }
+  subTasks: Array<{ id: string; name: string; status: string }>
+  splitHint?: string
+}
+
+/** GET /task/pending-plan-approval（主任务 WAITING_PLAN_APPROVAL + children） */
+export type PendingPlanApprovalRow = {
+  id: string
+  name: string
+  status: string
+  children: TaskNode[]
+}
