@@ -9,6 +9,7 @@
     "prebuild": "pnpm --filter @ai-orchestrator/shared build",
     "build": "pnpm run prebuild && tsc -p tsconfig.build.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "dev": "nest start --watch --preserveWatchOutput --tsc",
     "start": "nest start",
     "start:dev": "nest start --watch --preserveWatchOutput --tsc",
     "start:debug": "nest start --debug --watch",
