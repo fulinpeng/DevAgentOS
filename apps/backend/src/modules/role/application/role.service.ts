@@ -39,6 +39,7 @@ export type RoleExecuteResult = {
 
 const REDIS_RUNNING = 'running';
 const REDIS_COMPLETED = 'completed';
+const REDIS_FAILED = 'failed';
 const REDIS_WAITING_APPROVAL = 'waiting_approval';
 const REDIS_WORKER_PAUSED = 'worker_paused';
 
@@ -263,7 +264,15 @@ export class RoleService {
       }
 
       if (!workerResult.success) {
-        throw new BadRequestException('Worker execution failed');
+        const failed = await this.taskRepository.updateTask(taskId, {
+          status: TaskStatus.FAILED,
+          result: workerResult.result,
+        });
+        await this.taskRedis.updateStatus(taskId, REDIS_FAILED);
+        await this.taskRedis.appendLog(taskId, 'failed', {
+          reason: 'worker_execution_failed',
+        });
+        return { task: failed, workerResult };
       }
 
       const paramsAfter = stripWorkerResumeSteps(mergedParams);

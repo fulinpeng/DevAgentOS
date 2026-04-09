@@ -21,6 +21,8 @@ import {
   buildWorkerUserContent,
   WORKER_TOOL_SYSTEM_PROMPT,
 } from '../infrastructure/worker-llm.prompt';
+import { RepairEngine } from '../repair/repair.engine';
+import type { RepairContext, RepairFailure } from '../repair/repair.types';
 import { ToolExecutor, type ToolExecuteResult } from '../tool/tool-executor';
 import { normalizeAction } from '../tool/action-normalize';
 
@@ -36,6 +38,23 @@ export type WorkerLlmStep = {
   action: string;
   args: Record<string, unknown>;
 };
+
+type StepResultItem = {
+  index: number;
+  action: string;
+  success: boolean;
+  error?: string;
+};
+
+type StepExecutionOutcome =
+  | { ok: true; stepResults: StepResultItem[] }
+  | {
+      ok: false;
+      stepResults: StepResultItem[];
+      failure: RepairFailure;
+      timeout: boolean;
+      remainingSteps: WorkerLlmStep[];
+    };
 
 /**
  * 解析 LLM 输出：优先 `steps[]`，否则兼容单条 `{ action, args }`。
@@ -177,6 +196,14 @@ function extractTechStacks(task: WorkerExecuteInput): {
   return { workflowTechStack: [], taskTechStack: [] };
 }
 
+function readRepairAttempts(config: ConfigService): number {
+  const n = Number(config.get<string>('REPAIR_MAX_ATTEMPTS', '3'));
+  if (!Number.isFinite(n) || n < 1) {
+    return 3;
+  }
+  return Math.min(Math.floor(n), 8);
+}
+
 @Injectable()
 export class WorkerExecutorService implements IWorkerExecutor {
   private readonly logger = new Logger(WorkerExecutorService.name);
@@ -188,6 +215,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
     private readonly toolExecutor: ToolExecutor,
     private readonly taskRedis: TaskRedis,
     private readonly fileContext: FileContextService,
+    private readonly repairEngine: RepairEngine,
   ) {}
 
   async execute(task: WorkerExecuteInput): Promise<WorkerExecuteOutput> {
@@ -391,131 +419,237 @@ export class WorkerExecutorService implements IWorkerExecutor {
     return this.runWorkerSteps(task, steps, baseDir, projectRoot);
   }
 
+  private async executeStepsInternal(
+    taskId: string,
+    steps: WorkerLlmStep[],
+    baseDir: string,
+    projectRoot: string,
+    indexOffset = 0,
+  ): Promise<StepExecutionOutcome> {
+    const stepResults: StepResultItem[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const index = indexOffset + i;
+      await this.taskRedis.appendExecutionLog(taskId, {
+        step: 'step_start',
+        time: new Date().toISOString(),
+        meta: { index, action: step.action, args: step.args, project_root: projectRoot },
+      });
+      const toolResult = await this.toolExecutor.execute(step.action, step.args, baseDir);
+      if (toolResult.success) {
+        await this.taskRedis.appendExecutionLog(taskId, {
+          step: 'step_success',
+          time: new Date().toISOString(),
+          meta: { index, tool: toolResult.tool, data: toolResult.data },
+        });
+        stepResults.push({ index, action: toolResult.tool, success: true });
+        if (toolResult.tool === 'writeFile') {
+          await this.taskRedis.appendExecutionLog(taskId, {
+            step: 'file_written',
+            time: new Date().toISOString(),
+            meta: toolResult.data,
+          });
+        }
+        continue;
+      }
+      await this.taskRedis.appendExecutionLog(taskId, {
+        step: 'step_fail',
+        time: new Date().toISOString(),
+        meta: { index, tool: toolResult.tool, error: toolResult.error },
+      });
+      stepResults.push({
+        index,
+        action: toolResult.tool,
+        success: false,
+        error: toolResult.error,
+      });
+      const timeout = isRunCommandTimeout(toolResult);
+      if (timeout) {
+        await this.taskRedis.appendExecutionLog(taskId, {
+          step: 'step_timeout',
+          time: new Date().toISOString(),
+          meta: { index, tool: toolResult.tool, project_root: projectRoot },
+        });
+      }
+      return {
+        ok: false,
+        stepResults,
+        timeout,
+        remainingSteps: steps.slice(i),
+        failure: {
+          stepIndex: index,
+          step,
+          tool: toolResult.tool,
+          error: toolResult.error,
+          data: (toolResult.data ?? {}) as Record<string, unknown>,
+        },
+      };
+    }
+    return { ok: true, stepResults };
+  }
+
   private async runWorkerSteps(
     task: WorkerExecuteInput,
     steps: WorkerLlmStep[],
     baseDir: string,
     projectRoot: string,
   ): Promise<WorkerExecuteOutput> {
-    const stepResults: Array<{
-      index: number;
-      action: string;
-      success: boolean;
-      error?: string;
-    }> = [];
+    const { workflowTechStack, taskTechStack } = extractTechStacks(task);
+    const maxAttempts = readRepairAttempts(this.config);
+    let allResults: StepResultItem[] = [];
+    let currentSteps = [...steps];
+    let attempt = 0;
+    const history: RepairContext['history'] = [];
 
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      const isoTime = new Date().toISOString();
-
-      await this.taskRedis.appendExecutionLog(task.id, {
-        step: 'step_start',
-        time: isoTime,
-        meta: {
-          index: i,
-          action: step.action,
-          args: step.args,
-          project_root: projectRoot,
-        },
-      });
-
-      const toolResult = await this.toolExecutor.execute(
-        step.action,
-        step.args,
+    while (true) {
+      const run = await this.executeStepsInternal(
+        task.id,
+        currentSteps,
         baseDir,
+        projectRoot,
+        allResults.length,
       );
-
-      if (toolResult.success) {
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'step_success',
-          time: new Date().toISOString(),
-          meta: {
-            index: i,
-            tool: toolResult.tool,
-            data: toolResult.data,
-          },
-        });
-        stepResults.push({
-          index: i,
-          action: toolResult.tool,
+      allResults = [...allResults, ...run.stepResults];
+      if (run.ok) {
+        const last = allResults[allResults.length - 1];
+        return {
           success: true,
-        });
-        if (toolResult.tool === 'writeFile') {
-          await this.taskRedis.appendExecutionLog(task.id, {
-            step: 'file_written',
-            time: new Date().toISOString(),
-            meta: toolResult.data,
-          });
-        }
-      } else {
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'step_fail',
-          time: new Date().toISOString(),
-          meta: {
-            index: i,
-            tool: toolResult.tool,
-            error: toolResult.error,
+          result: {
+            mode: 'steps',
+            stepsExecuted: allResults.length,
+            steps: allResults,
+            lastAction: last?.action,
+            action: last?.action,
+            repair: {
+              version: 1,
+              state: history.length > 0 ? 'succeeded' : 'idle',
+              attempt,
+              maxAttempts,
+              history,
+            },
           },
-        });
-        stepResults.push({
-          index: i,
-          action: toolResult.tool,
+        };
+      }
+
+      if (run.timeout) {
+        return {
           success: false,
-          error: toolResult.error,
-        });
-        if (isRunCommandTimeout(toolResult)) {
-          await this.taskRedis.appendExecutionLog(task.id, {
-            step: 'step_timeout',
-            time: new Date().toISOString(),
-            meta: {
-              index: i,
-              tool: toolResult.tool,
-              project_root: projectRoot,
+          result: {
+            workerPaused: true,
+            pauseReason: 'run_command_timeout',
+            failedAtIndex: run.failure.stepIndex,
+            remainingSteps: run.remainingSteps,
+            mode: 'steps',
+            steps: allResults,
+            error: run.failure.error,
+            lastTool: run.failure.tool,
+            projectRoot,
+            repair: {
+              version: 1,
+              state: 'active',
+              attempt,
+              maxAttempts,
+              lastFailure: run.failure,
+              remainingSteps: run.remainingSteps,
+              history,
             },
-          });
-          const remainingSteps = steps.slice(i).map((s) => ({
-            action: s.action,
-            args: s.args,
-          }));
-          return {
-            success: false,
-            result: {
-              workerPaused: true,
-              pauseReason: 'run_command_timeout',
-              failedAtIndex: i,
-              remainingSteps,
-              mode: 'steps',
-              steps: stepResults,
-              error: toolResult.error,
-              lastTool: toolResult.tool,
-              projectRoot,
-            },
-          };
-        }
+          },
+        };
+      }
+
+      if (attempt >= maxAttempts) {
         return {
           success: false,
           result: {
             mode: 'steps',
-            failedAtIndex: i,
-            steps: stepResults,
-            error: toolResult.error,
-            lastTool: toolResult.tool,
+            failedAtIndex: run.failure.stepIndex,
+            steps: allResults,
+            error: run.failure.error,
+            lastTool: run.failure.tool,
+            repair: {
+              version: 1,
+              state: 'exhausted',
+              attempt,
+              maxAttempts,
+              lastFailure: run.failure,
+              remainingSteps: run.remainingSteps,
+              history,
+            },
           },
         };
       }
-    }
 
-    const last = stepResults[stepResults.length - 1];
-    return {
-      success: true,
-      result: {
-        mode: 'steps',
-        stepsExecuted: steps.length,
-        steps: stepResults,
-        lastAction: last?.action,
-        /** 与旧版单 action 结果对齐，便于调用方 / 测试断言 */
-        action: last?.action,
-      },
-    };
+      attempt += 1;
+      const context: RepairContext = {
+        taskId: task.id,
+        projectRoot,
+        workflowTechStack,
+        taskTechStack,
+        attempt,
+        maxAttempts,
+        remainingSteps: run.remainingSteps,
+        failure: run.failure,
+        history,
+      };
+      const plan = await this.repairEngine.planFixSteps(context);
+      if (!plan || plan.fixSteps.length === 0) {
+        return {
+          success: false,
+          result: {
+            mode: 'steps',
+            failedAtIndex: run.failure.stepIndex,
+            steps: allResults,
+            error: run.failure.error,
+            lastTool: run.failure.tool,
+            repair: {
+              version: 1,
+              state: 'exhausted',
+              attempt,
+              maxAttempts,
+              lastFailure: run.failure,
+              remainingSteps: run.remainingSteps,
+              history,
+            },
+          },
+        };
+      }
+
+      await this.taskRedis.appendExecutionLog(task.id, {
+        step: 'repair_plan_selected',
+        time: new Date().toISOString(),
+        meta: {
+          attempt,
+          maxAttempts,
+          skillId: plan.skillId,
+          category: plan.category,
+          score: plan.score,
+          reason: plan.reason,
+          fixStepsCount: plan.fixSteps.length,
+        },
+      });
+
+      const fixRun = await this.executeStepsInternal(
+        task.id,
+        plan.fixSteps,
+        baseDir,
+        projectRoot,
+        allResults.length,
+      );
+      allResults = [...allResults, ...fixRun.stepResults];
+      history.push({
+        attempt,
+        skillId: plan.skillId,
+        category: plan.category,
+        success: fixRun.ok,
+        reason: plan.reason,
+      });
+
+      if (!fixRun.ok) {
+        currentSteps = fixRun.remainingSteps;
+        continue;
+      }
+      // 修复成功后继续跑失败点及其后续步骤
+      currentSteps = run.remainingSteps;
+    }
   }
 }
