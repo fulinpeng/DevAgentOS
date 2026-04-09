@@ -1,5 +1,6 @@
+/** 须与后端 `PORT` 一致；未设置时与 apps/backend `main.ts` 默认 3000 对齐 */
 const baseUrl =
-  import.meta.env.VITE_API_BASE?.replace(/\/$/, '') ?? 'http://127.0.0.1:3001'
+  import.meta.env.VITE_API_BASE?.replace(/\/$/, '') ?? 'http://127.0.0.1:3000'
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${baseUrl}${path.startsWith('/') ? path : `/${path}`}`)

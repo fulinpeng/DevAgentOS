@@ -136,7 +136,7 @@ export class RoleService {
     }
     if (route === 'reject_running') {
       throw new ConflictException(
-        `Task ${taskId} is already running; retry later`,
+        `Task ${taskId} is already running. 若为断线/中断后的残留 RUNNING，请先 PATCH /task/${taskId}/status 为 WORKER_PAUSED，再 POST /role/execute/${taskId} 续跑。`,
       );
     }
 
@@ -181,7 +181,7 @@ export class RoleService {
       }
       if (r2 === 'reject_running') {
         throw new ConflictException(
-          `Task ${taskId} is already running; retry later`,
+          `Task ${taskId} is already running. 若为断线/中断后的残留 RUNNING，请先 PATCH /task/${taskId}/status 为 WORKER_PAUSED，再 POST /role/execute/${taskId} 续跑。`,
         );
       }
       if (r2 === 'blocked_plan') {

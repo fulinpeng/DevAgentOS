@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma, Task, TaskStatus } from '@prisma/client';
 import { TaskRedis } from '../../infrastructure/redis/task.redis';
@@ -131,8 +132,15 @@ export class TaskQueryService {
     };
   }
 
-  getTaskLogs(taskId: string) {
-    return this.taskRedis.getExecutionLogs(taskId);
+  async getTaskLogs(taskId: string) {
+    try {
+      return await this.taskRedis.getExecutionLogs(taskId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new ServiceUnavailableException(
+        `Redis 不可用，无法读取任务日志。请确认 Redis 已启动且 apps/backend/.env 的 REDIS_URL 可连通。底层错误：${msg}`,
+      );
+    }
   }
 
   /**
