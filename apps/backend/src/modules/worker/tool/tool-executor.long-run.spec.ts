@@ -1,4 +1,7 @@
-import { isLongRunningDevServerCommand } from './tool-executor';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { isLongRunningDevServerCommand, ToolExecutor } from './tool-executor';
 
 describe('isLongRunningDevServerCommand', () => {
   it('flags dev / preview style commands', () => {
@@ -19,5 +22,33 @@ describe('isLongRunningDevServerCommand', () => {
     );
     expect(isLongRunningDevServerCommand('pnpm run test')).toBe(false);
     expect(isLongRunningDevServerCommand('pnpm install')).toBe(false);
+  });
+});
+
+describe('ToolExecutor writeFile overwrite guard', () => {
+  it('blocks overwriting existing file by default', async () => {
+    const baseDir = mkdtempSync(path.join(tmpdir(), 'worker-tool-'));
+    writeFileSync(path.join(baseDir, 'a.txt'), 'old', 'utf8');
+    const exec = new ToolExecutor();
+    const r = await exec.execute(
+      'writeFile',
+      { path: 'a.txt', content: 'new' },
+      baseDir,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').toContain('unsafe_full_overwrite');
+  });
+
+  it('allows overwriting when overwriteExisting=true', async () => {
+    const baseDir = mkdtempSync(path.join(tmpdir(), 'worker-tool-'));
+    writeFileSync(path.join(baseDir, 'a.txt'), 'old', 'utf8');
+    const exec = new ToolExecutor();
+    const r = await exec.execute(
+      'writeFile',
+      { path: 'a.txt', content: 'new', overwriteExisting: true },
+      baseDir,
+    );
+    expect(r.success).toBe(true);
+    expect(r.data?.overwrittenExisting).toBe(true);
   });
 });

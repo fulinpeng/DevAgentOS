@@ -8,15 +8,71 @@ const MAX_TREE_FILES = 50;
 /** 单文件读入 Prompt 的最大字符数 */
 const MAX_FILE_CONTENT_CHARS = 2000;
 
-/** 按优先级尝试读取的关键路径（相对沙箱根） */
-const IMPORTANT_REL_PATHS = [
+/** 最多注入多少个“关键文件内容”到 Worker prompt */
+const MAX_IMPORTANT_FILES = 12;
+
+/** 基础骨架文件：优先注入 */
+const CORE_IMPORTANT_REL_PATHS = [
   'package.json',
   'vite.config.ts',
+  'tsconfig.json',
+  'tsconfig.app.json',
+  'tsconfig.node.json',
   'src/main.tsx',
   'src/App.tsx',
+  'src/routes.tsx',
 ] as const;
 
 const IGNORE_DIR_NAMES = new Set(['node_modules', '.git', 'dist']);
+
+type ImportantFileSelectionInput = {
+  taskName?: string;
+  taskDescription?: string;
+  goal?: string;
+  fileTree?: string[];
+};
+
+function normalizeRelPath(rel: string): string {
+  return rel.replace(/\\/g, '/');
+}
+
+function shouldPreferAsAppSource(rel: string): boolean {
+  return /^(src\/(pages|components|routes|router|hooks|store|context|api|services|types)\/|src\/[A-Z].*\.(tsx|ts)$)/i.test(
+    rel,
+  );
+}
+
+function tokenizeTaskText(input: ImportantFileSelectionInput): string[] {
+  const raw = [input.taskName, input.taskDescription, input.goal]
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    .join(' ')
+    .toLowerCase();
+  if (!raw) {
+    return [];
+  }
+  const tokens = raw
+    .split(/[^a-z0-9\u4e00-\u9fa5]+/i)
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 3 || /[\u4e00-\u9fa5]{2,}/.test(x));
+  return Array.from(new Set(tokens)).slice(0, 24);
+}
+
+function scorePath(rel: string, tokens: string[]): number {
+  const lower = rel.toLowerCase();
+  let score = 0;
+  if (CORE_IMPORTANT_REL_PATHS.some((p) => p.toLowerCase() === lower)) score += 100;
+  if (shouldPreferAsAppSource(rel)) score += 25;
+  if (/^src\/(pages|components)\//i.test(rel)) score += 20;
+  if (/^src\/(routes|router)\//i.test(rel) || /^src\/routes\.tsx$/i.test(rel)) {
+    score += 18;
+  }
+  if (/\.(tsx|ts|jsx|js|css|scss|json)$/.test(lower)) score += 8;
+  if (/index\.(tsx|ts|jsx|js)$/.test(lower)) score += 4;
+  for (const token of tokens) {
+    if (lower.includes(token)) score += 15;
+  }
+  return score;
+}
 
 @Injectable()
 export class FileContextService {
@@ -70,12 +126,38 @@ export class FileContextService {
   /**
    * 读取少量关键文件内容（每文件最多 {@link MAX_FILE_CONTENT_CHARS} 字符）。
    */
-  getImportantFiles(baseDir: string): Record<string, string> {
+  getImportantFiles(
+    baseDir: string,
+    input: ImportantFileSelectionInput = {},
+  ): Record<string, string> {
     const out: Record<string, string> = {};
     if (!existsSync(baseDir)) {
       return out;
     }
-    for (const rel of IMPORTANT_REL_PATHS) {
+    const fileTree =
+      input.fileTree && input.fileTree.length > 0
+        ? input.fileTree.map(normalizeRelPath)
+        : this.getFileTree(baseDir);
+    const tokens = tokenizeTaskText(input);
+    const candidateSet = new Set<string>();
+
+    for (const rel of CORE_IMPORTANT_REL_PATHS) {
+      candidateSet.add(rel);
+    }
+
+    const scored = fileTree
+      .map((rel) => ({ rel, score: scorePath(rel, tokens) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel));
+
+    for (const item of scored) {
+      if (candidateSet.size >= MAX_IMPORTANT_FILES) {
+        break;
+      }
+      candidateSet.add(item.rel);
+    }
+
+    for (const rel of candidateSet) {
       const full = path.join(baseDir, rel);
       if (!existsSync(full)) {
         continue;

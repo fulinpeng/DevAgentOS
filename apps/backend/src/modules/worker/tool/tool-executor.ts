@@ -176,6 +176,8 @@ export class ToolExecutor {
         case 'writeFile': {
           const pathStr = String(args.path ?? '');
           const content = String(args.content ?? '');
+          const overwriteExisting =
+            args.overwriteExisting === true || args.allowOverwrite === true;
           if (!pathStr) {
             return {
               success: false,
@@ -183,7 +185,9 @@ export class ToolExecutor {
               error: 'writeFile requires args.path',
             };
           }
-          const r = await toolWriteFile(baseDir, pathStr, content);
+          const r = await toolWriteFile(baseDir, pathStr, content, {
+            overwriteExisting,
+          });
           return r.success
             ? { success: true, tool: action, data: r.data }
             : { success: false, tool: action, error: r.error };

@@ -14,7 +14,7 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
    - 子进程 **cwd 固定为项目根目录（projectRoot）**，由系统设置，**不要传 cwd**。
    - 命令必须以服务端白名单前缀之一开头（例如：pnpm install / pnpm add / pnpm run / pnpm exec / pnpm dlx / pnpm create … / npm install / npm run / yarn …）；**禁止**裸写 node、git、powershell 等未放行命令。
    - **禁止** \`pnpm run dev\`、\`npm run dev\`、\`vite\`（非 build）、\`next dev\` 等**长期不退出**的开发服务器命令：Worker 会等待进程结束，导致步骤一直挂起。验证工程请用 \`pnpm run build\` / \`test\` / \`lint\` 等会结束的脚本。
-2. writeFile — args: { "path": string, "content": string }
+2. writeFile — args: { "path": string, "content": string, "overwriteExisting"?: boolean }
 3. readFile — args: { "path": string }
 4. listFiles — args: { "path"?: string }，默认 "."
 5. createDirectory — args: { "path": string }
@@ -35,10 +35,10 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 1. 必须输出 JSON，且必须使用 steps 数组（至少一步）。
 2. 必须基于已有项目结构进行修改或新增；不要重复创建已存在的文件（除非任务明确要求覆盖）。
 3. React + TypeScript：\`useState([])\` 必须写元素类型（如 \`useState<ImageItem[]>([])\`），否则易变成 \`never[]\`；表单/输入的 \`e\` 等参数须标注 \`React.ChangeEvent<...>\` 等类型；路由里 import 的页面必须在同一次 steps 中已存在（readFile 确认或 writeFile 创建）。
-4. 优先修改已有文件，而不是无必要地全盘重写。
+4. 对已存在文件：先 readFile，再做最小改动；只有确需覆盖时才 writeFile + overwriteExisting=true。禁止无必要全盘重写（尤其 App.tsx/routes/核心组件）。
 5. 初始化或构建：优先 pnpm install / pnpm run build / pnpm run test / pnpm create …；**不要**用 pnpm run dev 启动本地服务。使用 pnpm create vite 时务必带齐 --template 等参数；若白名单内无合适命令，用 writeFile/createDirectory 搭结构后再 pnpm install。安装依赖用**单独一步** runCommand。
 6. **收尾（前端/TS 项目强制）**：凡修改或新增了 \`.tsx\` / \`.ts\` / 路由等源码，**最后一步必须是**会自行结束的 \`pnpm run build\`（或项目 package.json 中等价的 build 脚本，如 \`npm run build\`），且须在 steps 内真实执行。**禁止**在仍可能 TS 报错、缺文件未补全时结束 steps；否则任务会被视为未完成。
-7. writeFile/readFile/listFiles 的 path 须为**相对路径**（相对 projectRoot）；禁止在 path 里写盘符或绝对路径。
+7. writeFile/readFile/listFiles 的 path 须为**相对路径**（相对 projectRoot）；禁止在 path 里写盘符或绝对路径。注意：已存在文件若未显式 overwriteExisting=true，服务端会拒绝覆盖（unsafe_full_overwrite）。
 8. 禁止输出 action 为 noop；禁止空 steps。
 9. 每一步必须真实可执行；runCommand 会**阻塞到命令退出**。开发服务器（dev/preview）不会自行退出，会导致步骤卡死，已被服务端拒绝；请用 build 等命令验证。
 
@@ -110,7 +110,7 @@ export function projectRootLeafName(projectRootAbs: string): string {
 function formatImportantFiles(files: Record<string, string>): string {
   const keys = Object.keys(files);
   if (keys.length === 0) {
-    return '（未找到 package.json / vite.config.ts / src/main.tsx / src/App.tsx 或不可读）';
+    return '（未找到可注入的关键文件，或文件不可读）';
   }
   return keys
     .map((k) => {
@@ -164,7 +164,7 @@ export function buildWorkerUserContent(
     '# 当前项目文件结构（递归扫描，已忽略 node_modules / .git / dist，最多 50 个文件）',
     formatFileTreeLines(input.fileTreeDeep),
     '',
-    '# 关键文件内容（节选，每文件最多 2000 字符）',
+    '# 关键文件内容（节选；含基础骨架文件 + 与任务更相关的页面/组件/路由，每文件最多 2000 字符）',
     formatImportantFiles(input.importantFiles),
     '',
     '# 输出要求',

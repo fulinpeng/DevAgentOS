@@ -489,8 +489,15 @@ export class WorkerExecutorService implements IWorkerExecutor {
       };
     }
 
+    const { taskDescription, goal } = extractTaskContext(task);
+    const { workflowTechStack, taskTechStack } = extractTechStacks(task);
     const deepFileTree = this.fileContext.getFileTree(baseDir);
-    const importantFiles = this.fileContext.getImportantFiles(baseDir);
+    const importantFiles = this.fileContext.getImportantFiles(baseDir, {
+      taskName: task.name,
+      taskDescription,
+      goal,
+      fileTree: deepFileTree,
+    });
     const includedFiles = Object.keys(importantFiles);
 
     await this.taskRedis.appendExecutionLog(task.id, {
@@ -517,9 +524,6 @@ export class WorkerExecutorService implements IWorkerExecutor {
     this.logger.log(
       `Worker LLM 将调用：taskId=${task.id} treeFiles=${deepFileTree.length} important=${includedFiles.length}`,
     );
-
-    const { taskDescription, goal } = extractTaskContext(task);
-    const { workflowTechStack, taskTechStack } = extractTechStacks(task);
 
     const user = buildWorkerUserContent({
       taskId: task.id,
