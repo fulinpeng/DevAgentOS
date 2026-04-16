@@ -4,6 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { clipLlmRawForRedis } from '../../../infrastructure/llm-log-meta';
 import { TaskRedis } from '../../../infrastructure/redis/task.redis';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type {
   IWorkerExecutor,
@@ -22,7 +23,12 @@ import {
   WORKER_TOOL_SYSTEM_PROMPT,
 } from '../infrastructure/worker-llm.prompt';
 import { RepairEngine } from '../repair/repair.engine';
-import type { RepairContext, RepairFailure } from '../repair/repair.types';
+import {
+  buildRepairSnapshot,
+  type RepairContext,
+  type RepairFailure,
+  type RepairWorkflowOutline,
+} from '../repair/repair.types';
 import { ToolExecutor, type ToolExecuteResult } from '../tool/tool-executor';
 import { normalizeAction } from '../tool/action-normalize';
 
@@ -173,6 +179,41 @@ function extractTaskContext(task: WorkerExecuteInput): {
     };
   }
   return { taskDescription: task.name, goal: task.name };
+}
+
+function extractRepairNarrative(
+  task: WorkerExecuteInput,
+): RepairContext['narrative'] {
+  const p = task.parameters;
+  if (p !== null && typeof p === 'object' && !Array.isArray(p)) {
+    const r = p as Record<string, unknown>;
+    const td =
+      typeof r.taskDescription === 'string' ? r.taskDescription.trim() : '';
+    const wg =
+      typeof r.workflowGoal === 'string' ? r.workflowGoal.trim() : '';
+    const wd =
+      typeof r.workflowDescription === 'string'
+        ? r.workflowDescription.trim()
+        : '';
+    const g = typeof r.goal === 'string' ? r.goal.trim() : '';
+    const goal = wg || g || task.name;
+    return {
+      taskName: task.name,
+      taskRole: task.role,
+      taskDescription: td || task.name,
+      workflowGoal: goal,
+      workflowDescription:
+        wd || '（parameters 中无 workflowDescription，请结合 workflowGoal 与 taskDescription 推断）',
+    };
+  }
+  return {
+    taskName: task.name,
+    taskRole: task.role,
+    taskDescription: task.name,
+    workflowGoal: task.name,
+    workflowDescription:
+      '（parameters 中无 workflowDescription，请结合 workflowGoal 与 taskDescription 推断）',
+  };
 }
 
 function extractTechStacks(task: WorkerExecuteInput): {
@@ -419,6 +460,80 @@ export class WorkerExecutorService implements IWorkerExecutor {
     return this.runWorkerSteps(task, steps, baseDir, projectRoot);
   }
 
+  /** 自当前任务沿 parent 链上至根，并取根下子任务作为「计划步骤」一览 */
+  private async fetchWorkflowOutlineForRepair(
+    taskId: string,
+  ): Promise<RepairWorkflowOutline | undefined> {
+    const chainSelect = {
+      id: true,
+      name: true,
+      role: true,
+      status: true,
+      parentId: true,
+    } satisfies Prisma.TaskSelect;
+    type ChainRow = Prisma.TaskGetPayload<{ select: typeof chainSelect }>;
+
+    try {
+      const chain: Array<{
+        id: string;
+        name: string;
+        role: string | null;
+        status: string;
+        parentId: string | null;
+      }> = [];
+      let currentId: string | null = taskId;
+      const guard = new Set<string>();
+      for (;;) {
+        if (!currentId || guard.has(currentId)) break;
+        guard.add(currentId);
+        const idHere = currentId;
+        const row: ChainRow | null = await this.prisma.task.findUnique({
+          where: { id: idHere },
+          select: chainSelect,
+        });
+        if (!row) break;
+        chain.push({
+          id: row.id,
+          name: row.name,
+          role: row.role,
+          status: String(row.status),
+          parentId: row.parentId,
+        });
+        currentId = row.parentId;
+      }
+      chain.reverse();
+      const root = chain[0];
+      if (!root) return undefined;
+      const pathFromRoot = chain.map((row) => ({
+        id: row.id,
+        name: row.name,
+        role: row.role,
+        status: row.status,
+      }));
+      const children = await this.prisma.task.findMany({
+        where: { parentId: root.id },
+        orderBy: { sortOrder: 'asc' },
+        select: { id: true, name: true, role: true, status: true },
+      });
+      return {
+        rootTaskId: root.id,
+        rootTaskName: root.name,
+        pathFromRoot,
+        planSteps: children.map((c) => ({
+          id: c.id,
+          name: c.name,
+          role: c.role,
+          status: String(c.status),
+        })),
+      };
+    } catch (e) {
+      this.logger.warn(
+        `fetchWorkflowOutlineForRepair: ${e instanceof Error ? e.message : e}`,
+      );
+      return undefined;
+    }
+  }
+
   private async executeStepsInternal(
     taskId: string,
     steps: WorkerLlmStep[],
@@ -495,6 +610,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
     projectRoot: string,
   ): Promise<WorkerExecuteOutput> {
     const { workflowTechStack, taskTechStack } = extractTechStacks(task);
+    const narrative = extractRepairNarrative(task);
     const maxAttempts = readRepairAttempts(this.config);
     let allResults: StepResultItem[] = [];
     let currentSteps = [...steps];
@@ -520,13 +636,12 @@ export class WorkerExecutorService implements IWorkerExecutor {
             steps: allResults,
             lastAction: last?.action,
             action: last?.action,
-            repair: {
-              version: 1,
+            repair: buildRepairSnapshot({
               state: history.length > 0 ? 'succeeded' : 'idle',
               attempt,
               maxAttempts,
               history,
-            },
+            }),
           },
         };
       }
@@ -544,15 +659,14 @@ export class WorkerExecutorService implements IWorkerExecutor {
             error: run.failure.error,
             lastTool: run.failure.tool,
             projectRoot,
-            repair: {
-              version: 1,
+            repair: buildRepairSnapshot({
               state: 'active',
               attempt,
               maxAttempts,
               lastFailure: run.failure,
               remainingSteps: run.remainingSteps,
               history,
-            },
+            }),
           },
         };
       }
@@ -566,20 +680,20 @@ export class WorkerExecutorService implements IWorkerExecutor {
             steps: allResults,
             error: run.failure.error,
             lastTool: run.failure.tool,
-            repair: {
-              version: 1,
+            repair: buildRepairSnapshot({
               state: 'exhausted',
               attempt,
               maxAttempts,
               lastFailure: run.failure,
               remainingSteps: run.remainingSteps,
               history,
-            },
+            }),
           },
         };
       }
 
       attempt += 1;
+      const workflowOutline = await this.fetchWorkflowOutlineForRepair(task.id);
       const context: RepairContext = {
         taskId: task.id,
         projectRoot,
@@ -590,6 +704,14 @@ export class WorkerExecutorService implements IWorkerExecutor {
         remainingSteps: run.remainingSteps,
         failure: run.failure,
         history,
+        narrative,
+        ...(workflowOutline ? { workflowOutline } : {}),
+        executedStepsPreview: allResults.map((r) => ({
+          index: r.index,
+          action: r.action,
+          success: r.success,
+          ...(r.error ? { error: r.error } : {}),
+        })),
       };
       const plan = await this.repairEngine.planFixSteps(context);
       if (!plan || plan.fixSteps.length === 0) {
@@ -601,15 +723,14 @@ export class WorkerExecutorService implements IWorkerExecutor {
             steps: allResults,
             error: run.failure.error,
             lastTool: run.failure.tool,
-            repair: {
-              version: 1,
+            repair: buildRepairSnapshot({
               state: 'exhausted',
               attempt,
               maxAttempts,
               lastFailure: run.failure,
               remainingSteps: run.remainingSteps,
               history,
-            },
+            }),
           },
         };
       }

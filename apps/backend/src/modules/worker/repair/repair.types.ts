@@ -5,6 +5,7 @@ export type RepairCategory =
   | 'missing_script'
   | 'path_error'
   | 'config_error'
+  | 'compile_error'
   | 'command_error'
   | 'build_error'
   | 'unknown';
@@ -15,6 +16,33 @@ export type RepairFailure = {
   tool: string;
   error?: string;
   data?: Record<string, unknown>;
+};
+
+/** 来自任务 parameters + 元数据，供修复 LLM 理解「在做什么项目」 */
+export type RepairTaskNarrative = {
+  taskName: string;
+  taskRole: string | null;
+  taskDescription: string;
+  workflowGoal: string;
+  workflowDescription: string;
+};
+
+/** 工作流根任务下的计划子任务 + 从根到当前任务的路径（轻量任务树） */
+export type RepairWorkflowOutline = {
+  rootTaskId: string;
+  rootTaskName: string;
+  pathFromRoot: Array<{
+    id: string;
+    name: string;
+    role: string | null;
+    status: string;
+  }>;
+  planSteps: Array<{
+    id: string;
+    name: string;
+    role: string | null;
+    status: string;
+  }>;
 };
 
 export type RepairContext = {
@@ -33,6 +61,16 @@ export type RepairContext = {
     success: boolean;
     reason: string;
   }>;
+  narrative: RepairTaskNarrative;
+  /** 数据库不可用时可能为空 */
+  workflowOutline?: RepairWorkflowOutline;
+  /** 本轮已执行步骤（含此前修复步），便于理解上下文 */
+  executedStepsPreview: Array<{
+    index: number;
+    action: string;
+    success: boolean;
+    error?: string;
+  }>;
 };
 
 export type FixPlan = {
@@ -42,4 +80,38 @@ export type FixPlan = {
   reason: string;
   fixSteps: WorkerLlmStep[];
 };
+
+export const REPAIR_RESULT_VERSION = 1;
+
+export type RepairSnapshot = {
+  version: number;
+  state: 'idle' | 'active' | 'exhausted' | 'succeeded';
+  attempt: number;
+  maxAttempts: number;
+  lastFailure?: RepairFailure;
+  remainingSteps?: WorkerLlmStep[];
+  history: RepairContext['history'];
+  selectedSkill?: Omit<FixPlan, 'fixSteps'>;
+};
+
+export function buildRepairSnapshot(input: {
+  state: RepairSnapshot['state'];
+  attempt: number;
+  maxAttempts: number;
+  history: RepairContext['history'];
+  lastFailure?: RepairFailure;
+  remainingSteps?: WorkerLlmStep[];
+  selectedSkill?: Omit<FixPlan, 'fixSteps'>;
+}): RepairSnapshot {
+  return {
+    version: REPAIR_RESULT_VERSION,
+    state: input.state,
+    attempt: input.attempt,
+    maxAttempts: input.maxAttempts,
+    ...(input.lastFailure ? { lastFailure: input.lastFailure } : {}),
+    ...(input.remainingSteps ? { remainingSteps: input.remainingSteps } : {}),
+    history: input.history,
+    ...(input.selectedSkill ? { selectedSkill: input.selectedSkill } : {}),
+  };
+}
 

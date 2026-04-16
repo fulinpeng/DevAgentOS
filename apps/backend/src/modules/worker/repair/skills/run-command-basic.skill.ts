@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 import type { WorkerLlmStep } from '../../application/worker.executor.service';
 import type { RepairSkill } from '../repair-skill.interface';
 import type { FixPlan, RepairContext } from '../repair.types';
+import {
+  getRunCommandFailureText,
+  looksLikeCompileOrTypeError,
+} from '../run-command-failure-text';
 
 function looksLikeDependencyMissing(errorText: string): boolean {
   const t = errorText.toLowerCase();
@@ -25,6 +29,13 @@ export class RunCommandBasicRepairSkill implements RepairSkill {
   match(context: RepairContext): { score: number; reason: string } {
     if (context.failure.tool !== 'runCommand') {
       return { score: 0, reason: 'not runCommand failure' };
+    }
+    const blob = getRunCommandFailureText(context.failure);
+    if (looksLikeCompileOrTypeError(blob)) {
+      return {
+        score: 0,
+        reason: 'compile/type error — use typescript-build skill',
+      };
     }
     const err = (context.failure.error ?? '').trim();
     if (!err) {

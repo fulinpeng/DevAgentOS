@@ -1,8 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { RepairSkill } from './repair-skill.interface';
 import type { FixPlan, RepairContext } from './repair.types';
+import { ConfigErrorRepairSkill } from './skills/config-error.skill';
 import { LlmFallbackRepairSkill } from './skills/llm-fallback.skill';
+import { LongRunningCommandRepairSkill } from './skills/long-running-command.skill';
+import { MissingScriptRepairSkill } from './skills/missing-script.skill';
+import { PathSandboxRepairSkill } from './skills/path-sandbox.skill';
 import { RunCommandBasicRepairSkill } from './skills/run-command-basic.skill';
+import { TypeScriptBuildRepairSkill } from './skills/typescript-build.skill';
 
 @Injectable()
 export class RepairEngine {
@@ -10,10 +15,23 @@ export class RepairEngine {
   private readonly skills: RepairSkill[];
 
   constructor(
+    longRunningCommand: LongRunningCommandRepairSkill,
+    pathSandbox: PathSandboxRepairSkill,
+    missingScript: MissingScriptRepairSkill,
+    configError: ConfigErrorRepairSkill,
+    typescriptBuild: TypeScriptBuildRepairSkill,
     runCommandBasic: RunCommandBasicRepairSkill,
     llmFallback: LlmFallbackRepairSkill,
   ) {
-    this.skills = [runCommandBasic, llmFallback];
+    this.skills = [
+      longRunningCommand,
+      pathSandbox,
+      missingScript,
+      configError,
+      typescriptBuild,
+      runCommandBasic,
+      llmFallback,
+    ];
   }
 
   async planFixSteps(context: RepairContext): Promise<FixPlan | null> {
