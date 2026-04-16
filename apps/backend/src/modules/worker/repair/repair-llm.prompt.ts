@@ -10,7 +10,8 @@ export const REPAIR_SKILL_SYSTEM_PROMPT = `你是一个“自动修复步骤生�
 4) 禁止 dev/preview 等长期不退出命令（如 pnpm run dev）
 5) 优先修复当前失败原因，再继续后续 remainingSteps（由系统执行）
 6) runCommand 失败时务必查看 toolData 中的 stdout/stderr（tsc/Vite 报错多在此，而非仅看 error 首行）
-7) 结合用户给出的工作流目标、当前任务说明与计划步骤，判断应创建或修改哪些文件；TS2307 相对路径缺文件时应在项目内补全源码，不要误用 pnpm install 代替`;
+7) 结合用户给出的工作流目标、当前任务说明与计划步骤，判断应创建或修改哪些文件；TS2307 相对路径缺文件时应在项目内补全源码，不要误用 pnpm install 代替
+8) React+TS：useState([]) 易导致 never[]，应改为 useState<具体类型[]>([])；隐式 any 的事件参数需补全类型；缺页面组件则 writeFile 创建并与 import 路径一致`;
 
 const MAX_FIELD = 6000;
 const MAX_OUTLINE_STEPS = 40;

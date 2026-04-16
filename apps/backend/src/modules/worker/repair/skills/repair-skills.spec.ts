@@ -61,6 +61,19 @@ describe('repair skills', () => {
     expect(plan?.fixSteps[0]?.args?.path).toBe('secret/.env');
   });
 
+  it('looksLikeCompileOrTypeError detects never[] / implicit any messages', () => {
+    expect(
+      looksLikeCompileOrTypeError(
+        "src/pages/Home.tsx(16,15): error TS2345: Argument of type 'Foo[]' is not assignable to parameter of type 'SetStateAction<never[]>'.",
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeCompileOrTypeError(
+        "src/pages/Home.tsx(19,25): error TS7006: Parameter 'e' implicitly has an 'any' type.",
+      ),
+    ).toBe(true);
+  });
+
   it('looksLikeCompileOrTypeError detects tsc output', () => {
     expect(
       looksLikeCompileOrTypeError(

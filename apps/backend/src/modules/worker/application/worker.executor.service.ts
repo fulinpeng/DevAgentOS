@@ -1,5 +1,6 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
+import * as path from 'node:path';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { clipLlmRawForRedis } from '../../../infrastructure/llm-log-meta';
@@ -23,6 +24,7 @@ import {
   WORKER_TOOL_SYSTEM_PROMPT,
 } from '../infrastructure/worker-llm.prompt';
 import { RepairEngine } from '../repair/repair.engine';
+import { getRunCommandFailureText } from '../repair/run-command-failure-text';
 import {
   buildRepairSnapshot,
   type RepairContext,
@@ -235,6 +237,160 @@ function extractTechStacks(task: WorkerExecuteInput): {
     };
   }
   return { workflowTechStack: [], taskTechStack: [] };
+}
+
+/** 与 task parameters 中 techStack 对齐：此类任务应在步骤末尾通过 build 验证 */
+function stacksSuggestFrontendBuild(
+  workflowTechStack: string[],
+  taskTechStack: string[],
+): boolean {
+  const blob = [...workflowTechStack, ...taskTechStack].join(' ').toLowerCase();
+  return (
+    blob.includes('vite') ||
+    blob.includes('react') ||
+    blob.includes('frontend') ||
+    blob.includes('vue') ||
+    blob.includes('svelte') ||
+    blob.includes('preact')
+  );
+}
+
+/** 任务参数未写 techStack 时，从项目 package.json 推断是否前端构建型（以便仍注入 build 校验） */
+function packageJsonSuggestsFrontendBuild(baseDir: string): boolean {
+  try {
+    const fp = path.join(baseDir, 'package.json');
+    if (!existsSync(fp)) {
+      return false;
+    }
+    const raw = readFileSync(fp, 'utf8');
+    const j = JSON.parse(raw) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const dep = { ...(j.dependencies ?? {}), ...(j.devDependencies ?? {}) };
+    const blob = Object.keys(dep).join(' ').toLowerCase();
+    return (
+      blob.includes('vite') ||
+      blob.includes('react') ||
+      blob.includes('vue') ||
+      blob.includes('svelte') ||
+      blob.includes('preact')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function shouldInjectTerminalBuildVerify(
+  workflowTechStack: string[],
+  taskTechStack: string[],
+  baseDir: string,
+): boolean {
+  return (
+    stacksSuggestFrontendBuild(workflowTechStack, taskTechStack) ||
+    packageJsonSuggestsFrontendBuild(baseDir)
+  );
+}
+
+/** 本批最后一步是否已是会结束的 build（与自动注入的校验对齐） */
+function lastStepIsTerminalBuildVerify(
+  step: WorkerLlmStep | undefined,
+): boolean {
+  if (!step || normalizeAction(step.action) !== 'runCommand') {
+    return false;
+  }
+  const cmd = String(step.args.command ?? '').trim().toLowerCase();
+  if (!cmd) return false;
+  return (
+    cmd === 'pnpm run build' ||
+    cmd.startsWith('pnpm run build ') ||
+    cmd === 'npm run build' ||
+    cmd.startsWith('npm run build ') ||
+    cmd === 'yarn build' ||
+    cmd.startsWith('yarn run build') ||
+    /\bvite\s+build\b/.test(cmd) ||
+    /\bpnpm\s+exec\s+vite\s+build\b/.test(cmd)
+  );
+}
+
+const REPAIR_MAX_WRITE_FILES = 4;
+const REPAIR_PROTECTED_PATHS = [
+  'src/main.tsx',
+  'src/app.tsx',
+  'src/router/index.tsx',
+  'src/router/routes.tsx',
+  'package.json',
+  'vite.config.ts',
+] as const;
+
+function normalizeRelPathForPolicy(pathLike: unknown): string {
+  return String(pathLike ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .toLowerCase();
+}
+
+function fingerprintRepairPlan(
+  failure: RepairFailure,
+  fixSteps: WorkerLlmStep[],
+): string {
+  const failureSig = `${failure.tool}|${String(failure.error ?? '').slice(0, 300)}`;
+  const stepsSig = fixSteps.map((s) => `${normalizeAction(s.action)}:${JSON.stringify(s.args)}`);
+  return `${failureSig}>>${stepsSig.join('||')}`;
+}
+
+function mentionsAnyPath(text: string, paths: readonly string[]): boolean {
+  const t = text.toLowerCase().replace(/\\/g, '/');
+  return paths.some((p) => t.includes(p.toLowerCase()));
+}
+
+function sanitizeRepairStepsByPolicy(
+  failure: RepairFailure,
+  steps: WorkerLlmStep[],
+): { ok: true; steps: WorkerLlmStep[] } | { ok: false; reason: string } {
+  const unique = new Set<string>();
+  const deduped: WorkerLlmStep[] = [];
+  for (const s of steps) {
+    const key = `${normalizeAction(s.action)}:${JSON.stringify(s.args)}`;
+    if (unique.has(key)) {
+      continue;
+    }
+    unique.add(key);
+    deduped.push(s);
+  }
+  if (deduped.length === 0) {
+    return { ok: false, reason: 'repair plan empty after dedup' };
+  }
+
+  const writePaths = deduped
+    .filter((s) => normalizeAction(s.action) === 'writeFile')
+    .map((s) => normalizeRelPathForPolicy(s.args.path))
+    .filter(Boolean);
+  const writeSet = new Set(writePaths);
+  if (writeSet.size > REPAIR_MAX_WRITE_FILES) {
+    return {
+      ok: false,
+      reason: `repair writes too many files (${writeSet.size} > ${REPAIR_MAX_WRITE_FILES})`,
+    };
+  }
+
+  if (writeSet.size > 0) {
+    const failureText = getRunCommandFailureText(failure);
+    const touchesProtected = Array.from(writeSet).filter((p) =>
+      REPAIR_PROTECTED_PATHS.some((root) => p === root || p.endsWith(`/${root}`)),
+    );
+    if (
+      touchesProtected.length > 0 &&
+      !mentionsAnyPath(failureText, touchesProtected)
+    ) {
+      return {
+        ok: false,
+        reason: `repair touches protected files without direct error evidence: ${touchesProtected.join(', ')}`,
+      };
+    }
+  }
+
+  return { ok: true, steps: deduped };
 }
 
 function readRepairAttempts(config: ConfigService): number {
@@ -616,6 +772,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
     let currentSteps = [...steps];
     let attempt = 0;
     const history: RepairContext['history'] = [];
+    const seenRepairPlanFingerprints = new Set<string>();
 
     while (true) {
       const run = await this.executeStepsInternal(
@@ -626,7 +783,47 @@ export class WorkerExecutorService implements IWorkerExecutor {
         allResults.length,
       );
       allResults = [...allResults, ...run.stepResults];
-      if (run.ok) {
+
+      let effectiveRun: StepExecutionOutcome = run;
+
+      if (
+        run.ok &&
+        shouldInjectTerminalBuildVerify(
+          workflowTechStack,
+          taskTechStack,
+          baseDir,
+        ) &&
+        currentSteps.length > 0 &&
+        !lastStepIsTerminalBuildVerify(
+          currentSteps[currentSteps.length - 1],
+        )
+      ) {
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'post_verify_build_injected',
+          time: new Date().toISOString(),
+          meta: {
+            reason:
+              'techStack suggests frontend; last step was not terminal build — enforcing pnpm run build',
+          },
+        });
+        const verifyStep: WorkerLlmStep = {
+          action: 'runCommand',
+          args: { command: 'pnpm run build' },
+        };
+        const vRun = await this.executeStepsInternal(
+          task.id,
+          [verifyStep],
+          baseDir,
+          projectRoot,
+          allResults.length,
+        );
+        allResults = [...allResults, ...vRun.stepResults];
+        if (!vRun.ok) {
+          effectiveRun = vRun;
+        }
+      }
+
+      if (effectiveRun.ok) {
         const last = allResults[allResults.length - 1];
         return {
           success: true,
@@ -646,25 +843,25 @@ export class WorkerExecutorService implements IWorkerExecutor {
         };
       }
 
-      if (run.timeout) {
+      if (effectiveRun.timeout) {
         return {
           success: false,
           result: {
             workerPaused: true,
             pauseReason: 'run_command_timeout',
-            failedAtIndex: run.failure.stepIndex,
-            remainingSteps: run.remainingSteps,
+            failedAtIndex: effectiveRun.failure.stepIndex,
+            remainingSteps: effectiveRun.remainingSteps,
             mode: 'steps',
             steps: allResults,
-            error: run.failure.error,
-            lastTool: run.failure.tool,
+            error: effectiveRun.failure.error,
+            lastTool: effectiveRun.failure.tool,
             projectRoot,
             repair: buildRepairSnapshot({
               state: 'active',
               attempt,
               maxAttempts,
-              lastFailure: run.failure,
-              remainingSteps: run.remainingSteps,
+              lastFailure: effectiveRun.failure,
+              remainingSteps: effectiveRun.remainingSteps,
               history,
             }),
           },
@@ -676,16 +873,16 @@ export class WorkerExecutorService implements IWorkerExecutor {
           success: false,
           result: {
             mode: 'steps',
-            failedAtIndex: run.failure.stepIndex,
+            failedAtIndex: effectiveRun.failure.stepIndex,
             steps: allResults,
-            error: run.failure.error,
-            lastTool: run.failure.tool,
+            error: effectiveRun.failure.error,
+            lastTool: effectiveRun.failure.tool,
             repair: buildRepairSnapshot({
               state: 'exhausted',
               attempt,
               maxAttempts,
-              lastFailure: run.failure,
-              remainingSteps: run.remainingSteps,
+              lastFailure: effectiveRun.failure,
+              remainingSteps: effectiveRun.remainingSteps,
               history,
             }),
           },
@@ -701,8 +898,8 @@ export class WorkerExecutorService implements IWorkerExecutor {
         taskTechStack,
         attempt,
         maxAttempts,
-        remainingSteps: run.remainingSteps,
-        failure: run.failure,
+        remainingSteps: effectiveRun.remainingSteps,
+        failure: effectiveRun.failure,
         history,
         narrative,
         ...(workflowOutline ? { workflowOutline } : {}),
@@ -719,21 +916,102 @@ export class WorkerExecutorService implements IWorkerExecutor {
           success: false,
           result: {
             mode: 'steps',
-            failedAtIndex: run.failure.stepIndex,
+            failedAtIndex: effectiveRun.failure.stepIndex,
             steps: allResults,
-            error: run.failure.error,
-            lastTool: run.failure.tool,
+            error: effectiveRun.failure.error,
+            lastTool: effectiveRun.failure.tool,
             repair: buildRepairSnapshot({
               state: 'exhausted',
               attempt,
               maxAttempts,
-              lastFailure: run.failure,
-              remainingSteps: run.remainingSteps,
+              lastFailure: effectiveRun.failure,
+              remainingSteps: effectiveRun.remainingSteps,
               history,
             }),
           },
         };
       }
+      const sanitized = sanitizeRepairStepsByPolicy(
+        effectiveRun.failure,
+        plan.fixSteps,
+      );
+      if (!sanitized.ok) {
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'repair_plan_rejected',
+          time: new Date().toISOString(),
+          meta: {
+            attempt,
+            reason: sanitized.reason,
+            skillId: plan.skillId,
+            category: plan.category,
+          },
+        });
+        return {
+          success: false,
+          result: {
+            mode: 'steps',
+            failedAtIndex: effectiveRun.failure.stepIndex,
+            steps: allResults,
+            error: `repair_plan_rejected: ${sanitized.reason}`,
+            lastTool: effectiveRun.failure.tool,
+            repair: buildRepairSnapshot({
+              state: 'exhausted',
+              attempt,
+              maxAttempts,
+              lastFailure: effectiveRun.failure,
+              remainingSteps: effectiveRun.remainingSteps,
+              history,
+              selectedSkill: {
+                skillId: plan.skillId,
+                score: plan.score,
+                category: plan.category,
+                reason: plan.reason,
+              },
+            }),
+          },
+        };
+      }
+      plan.fixSteps = sanitized.steps;
+      const repairPlanFp = fingerprintRepairPlan(
+        effectiveRun.failure,
+        plan.fixSteps,
+      );
+      if (seenRepairPlanFingerprints.has(repairPlanFp)) {
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'repair_plan_dedup_hit',
+          time: new Date().toISOString(),
+          meta: {
+            attempt,
+            skillId: plan.skillId,
+            category: plan.category,
+          },
+        });
+        return {
+          success: false,
+          result: {
+            mode: 'steps',
+            failedAtIndex: effectiveRun.failure.stepIndex,
+            steps: allResults,
+            error: 'repair_plan_dedup_hit',
+            lastTool: effectiveRun.failure.tool,
+            repair: buildRepairSnapshot({
+              state: 'exhausted',
+              attempt,
+              maxAttempts,
+              lastFailure: effectiveRun.failure,
+              remainingSteps: effectiveRun.remainingSteps,
+              history,
+              selectedSkill: {
+                skillId: plan.skillId,
+                score: plan.score,
+                category: plan.category,
+                reason: 'duplicate repair plan detected',
+              },
+            }),
+          },
+        };
+      }
+      seenRepairPlanFingerprints.add(repairPlanFp);
 
       await this.taskRedis.appendExecutionLog(task.id, {
         step: 'repair_plan_selected',
@@ -770,7 +1048,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
         continue;
       }
       // 修复成功后继续跑失败点及其后续步骤
-      currentSteps = run.remainingSteps;
+      currentSteps = effectiveRun.remainingSteps;
     }
   }
 }

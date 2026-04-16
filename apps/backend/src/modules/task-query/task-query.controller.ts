@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -66,6 +67,12 @@ export class TaskQueryController {
   @Get(':id/logs')
   logs(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.taskQueryService.getTaskLogs(id);
+  }
+
+  /** 删除主任务及其子任务、微调版本（级联）；并清理相关 Redis 键 */
+  @Delete(':id')
+  deleteTask(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.taskQueryService.deleteRootTask(id);
   }
 
   @Patch(':id/status')

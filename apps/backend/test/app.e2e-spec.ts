@@ -39,6 +39,11 @@ function createTaskRedisMock(redisStore: Map<string, string>) {
         logLists.set(id, list);
       },
       getExecutionLogs: async (id: string) => logLists.get(id) ?? [],
+      removeTaskSidecarKeys: async (id: string) => {
+        redisStore.delete(`task:${id}`);
+        locks.delete(id);
+        logLists.delete(id);
+      },
       onModuleDestroy: async () => {},
     },
     getLogs: (id: string) => logLists.get(id) ?? [],

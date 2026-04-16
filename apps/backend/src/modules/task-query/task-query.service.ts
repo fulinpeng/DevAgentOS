@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -81,11 +82,61 @@ function stripWorkerResumeStepsFromParams(
  */
 @Injectable()
 export class TaskQueryService {
+  private readonly logger = new Logger(TaskQueryService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly taskRedis: TaskRedis,
     private readonly roleService: RoleService,
   ) {}
+
+  /** 根及其所有后代任务 id（BFS，含根） */
+  private async collectSubtreeTaskIds(rootId: string): Promise<string[]> {
+    const all: string[] = [];
+    let frontier: string[] = [rootId];
+    while (frontier.length > 0) {
+      all.push(...frontier);
+      const children = await this.prisma.task.findMany({
+        where: { parentId: { in: frontier } },
+        select: { id: true },
+      });
+      frontier = children.map((c) => c.id);
+    }
+    return all;
+  }
+
+  /**
+   * 仅从首页列表删除「主任务」：级联删子任务与 TaskVersion，并尽力清理 Redis。
+   * RUNNING 禁止删除，避免与 Worker 并发冲突。
+   */
+  async deleteRootTask(taskId: string): Promise<{ deleted: true; id: string }> {
+    const task = await this.prisma.task.findUnique({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+    if (task.parentId !== null) {
+      throw new BadRequestException(
+        '仅可删除主任务（根节点）；子任务会随主任务级联删除，请在列表中对主任务操作',
+      );
+    }
+    if (task.status === TaskStatus.RUNNING) {
+      throw new ConflictException(
+        '任务为 RUNNING，请先等待结束或人工置为 WORKER_PAUSED 后再删',
+      );
+    }
+    const subtreeIds = await this.collectSubtreeTaskIds(taskId);
+    for (const tid of subtreeIds) {
+      try {
+        await this.taskRedis.removeTaskSidecarKeys(tid);
+      } catch (e) {
+        this.logger.warn(
+          `removeTaskSidecarKeys skipped for ${tid}: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+    await this.prisma.task.delete({ where: { id: taskId } });
+    return { deleted: true, id: taskId };
+  }
 
   async listRootTasks(): Promise<RootTaskListItem[]> {
     const rows = await this.prisma.task.findMany({

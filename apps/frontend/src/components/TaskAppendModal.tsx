@@ -10,6 +10,8 @@ function parametersForAppendDefaults(
   }
   const o = { ...(raw as Record<string, unknown>) }
   delete o.workerResumeSteps
+  // 子任务应有独立说明，勿沿用父任务 parameters 里的长描述
+  delete o.taskDescription
   return o
 }
 
@@ -34,6 +36,7 @@ export function TaskAppendModal({
   onReload,
 }: Props) {
   const [name, setName] = useState('')
+  const [taskDescription, setTaskDescription] = useState('')
   const [role, setRole] = useState('')
   const [paramsJson, setParamsJson] = useState('{}')
   const [busy, setBusy] = useState(false)
@@ -45,6 +48,7 @@ export function TaskAppendModal({
     }
     setErr(null)
     setName('')
+    setTaskDescription('')
     setRole(defaultRole ?? '')
     const base = parametersForAppendDefaults(defaultParameters)
     setParamsJson(JSON.stringify(base, null, 2))
@@ -67,8 +71,19 @@ export function TaskAppendModal({
       return
     }
     if (!name.trim()) {
-      setErr('请填写子任务名称')
+      setErr('请填写任务名称')
       return
+    }
+    const desc = taskDescription.trim()
+    if (desc) {
+      parameters = { ...parameters, taskDescription: desc }
+      const hasGoal =
+        (typeof parameters.workflowGoal === 'string' &&
+          parameters.workflowGoal.trim() !== '') ||
+        (typeof parameters.goal === 'string' && parameters.goal.trim() !== '')
+      if (!hasGoal) {
+        parameters = { ...parameters, goal: desc }
+      }
     }
     setBusy(true)
     setErr(null)
@@ -137,13 +152,24 @@ export function TaskAppendModal({
         </p>
         {err ? <p className="error">{err}</p> : null}
         <label className="form-field">
-          <span>子任务名称</span>
+          <span>任务名称</span>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
             autoComplete="off"
+            placeholder="列表与任务树中显示的短标题"
+          />
+        </label>
+        <label className="form-field">
+          <span>任务描述</span>
+          <textarea
+            value={taskDescription}
+            onChange={(e) => setTaskDescription(e.target.value)}
+            rows={5}
+            disabled={busy}
+            placeholder="详细需求与验收要点（推荐填写）；留空时 Worker 主要参考任务名称，也可仅在下方 JSON 中写 taskDescription"
           />
         </label>
         <label className="form-field">

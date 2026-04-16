@@ -34,11 +34,13 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 
 1. 必须输出 JSON，且必须使用 steps 数组（至少一步）。
 2. 必须基于已有项目结构进行修改或新增；不要重复创建已存在的文件（除非任务明确要求覆盖）。
-3. 优先修改已有文件，而不是无必要地全盘重写。
-4. 初始化或构建：优先 pnpm install / pnpm run build / pnpm run test / pnpm create …；**不要**用 pnpm run dev 启动本地服务。使用 pnpm create vite 时务必带齐 --template 等参数；若白名单内无合适命令，用 writeFile/createDirectory 搭结构后再 pnpm install。安装依赖用**单独一步** runCommand。
-5. writeFile/readFile/listFiles 的 path 须为**相对路径**（相对 projectRoot）；禁止在 path 里写盘符或绝对路径。
-6. 禁止输出 action 为 noop；禁止空 steps。
-7. 每一步必须真实可执行；runCommand 会**阻塞到命令退出**。开发服务器（dev/preview）不会自行退出，会导致步骤卡死，已被服务端拒绝；请用 build 等命令验证。
+3. React + TypeScript：\`useState([])\` 必须写元素类型（如 \`useState<ImageItem[]>([])\`），否则易变成 \`never[]\`；表单/输入的 \`e\` 等参数须标注 \`React.ChangeEvent<...>\` 等类型；路由里 import 的页面必须在同一次 steps 中已存在（readFile 确认或 writeFile 创建）。
+4. 优先修改已有文件，而不是无必要地全盘重写。
+5. 初始化或构建：优先 pnpm install / pnpm run build / pnpm run test / pnpm create …；**不要**用 pnpm run dev 启动本地服务。使用 pnpm create vite 时务必带齐 --template 等参数；若白名单内无合适命令，用 writeFile/createDirectory 搭结构后再 pnpm install。安装依赖用**单独一步** runCommand。
+6. **收尾（前端/TS 项目强制）**：凡修改或新增了 \`.tsx\` / \`.ts\` / 路由等源码，**最后一步必须是**会自行结束的 \`pnpm run build\`（或项目 package.json 中等价的 build 脚本，如 \`npm run build\`），且须在 steps 内真实执行。**禁止**在仍可能 TS 报错、缺文件未补全时结束 steps；否则任务会被视为未完成。
+7. writeFile/readFile/listFiles 的 path 须为**相对路径**（相对 projectRoot）；禁止在 path 里写盘符或绝对路径。
+8. 禁止输出 action 为 noop；禁止空 steps。
+9. 每一步必须真实可执行；runCommand 会**阻塞到命令退出**。开发服务器（dev/preview）不会自行退出，会导致步骤卡死，已被服务端拒绝；请用 build 等命令验证。
 
 只输出 JSON。`;
 
@@ -164,6 +166,10 @@ export function buildWorkerUserContent(
     '',
     '# 关键文件内容（节选，每文件最多 2000 字符）',
     formatImportantFiles(input.importantFiles),
+    '',
+    '# 输出要求',
+    '- 顶层 JSON 含 steps 数组，按顺序执行（禁止 noop）。',
+    '- 若技术栈含 Vite/React 等前端构建：steps **最后一项**须为 pnpm run build（或等价 build），用于确认 TypeScript 与打包通过；改文件后未跑 build 视为不合格计划。',
     '',
     '# 请你输出一条 JSON：顶层含 steps 数组，按顺序完成本任务（禁止 noop）',
   ].join('\n');

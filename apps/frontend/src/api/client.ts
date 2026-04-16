@@ -36,3 +36,16 @@ export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
   }
   return res.json() as Promise<T>
 }
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(`${baseUrl}${path.startsWith('/') ? path : `/${path}`}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`${res.status}: ${text}`)
+  }
+  const text = await res.text()
+  if (!text) return {} as T
+  return JSON.parse(text) as T
+}

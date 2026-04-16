@@ -81,4 +81,13 @@ export class TaskRedis implements OnModuleDestroy {
     const raw = await this.client.lrange(this.logsKey(taskId), 0, -1);
     return raw.map((line) => JSON.parse(line) as TaskExecutionLogEntry);
   }
+
+  /** 删除任务在 Redis 中的状态、执行锁与执行日志（库行删除前应调用） */
+  async removeTaskSidecarKeys(taskId: string): Promise<void> {
+    await this.client.del(
+      this.statusKey(taskId),
+      this.lockKey(taskId),
+      this.logsKey(taskId),
+    );
+  }
 }

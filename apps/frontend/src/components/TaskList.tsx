@@ -1,26 +1,49 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiGet } from '../api/client'
+import { apiDelete, apiGet } from '../api/client'
 import type { RootTaskRow } from '../types/task'
 import { riskShort } from './RiskBadge'
 
 export function TaskList() {
   const [rows, setRows] = useState<RootTaskRow[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const reload = useCallback(() => {
+    return apiGet<RootTaskRow[]>('/task/list').then(setRows)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
-    apiGet<RootTaskRow[]>('/task/list')
-      .then((data) => {
-        if (!cancelled) setRows(data)
-      })
+    setErr(null)
+    reload()
       .catch((e: Error) => {
         if (!cancelled) setErr(e.message)
       })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [reload])
+
+  async function removeRow(id: string, name: string) {
+    if (
+      !window.confirm(
+        `确定删除主任务「${name}」？将同时删除其全部子任务与相关数据，且不可恢复。`,
+      )
+    ) {
+      return
+    }
+    setDeletingId(id)
+    setErr(null)
+    try {
+      await apiDelete(`/task/${id}`)
+      await reload()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   if (err) {
     return <p className="error">加载失败：{err}</p>
@@ -52,7 +75,7 @@ export function TaskList() {
             <th>风险</th>
             <th>子任务数</th>
             <th>创建时间</th>
-            <th />
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -95,6 +118,21 @@ export function TaskList() {
                       <Link to={`/task/${r.id}/edit`}>编辑</Link>
                     </>
                   ) : null}
+                  {' · '}
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    style={{ fontSize: '0.82rem', padding: '2px 8px' }}
+                    disabled={deletingId === r.id || r.status === 'RUNNING'}
+                    title={
+                      r.status === 'RUNNING'
+                        ? 'RUNNING 时不可删除'
+                        : '删除主任务及全部子任务'
+                    }
+                    onClick={() => void removeRow(r.id, r.name)}
+                  >
+                    {deletingId === r.id ? '删除中…' : '删除'}
+                  </button>
                 </td>
               </tr>
             ))

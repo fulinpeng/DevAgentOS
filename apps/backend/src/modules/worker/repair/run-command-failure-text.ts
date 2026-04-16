@@ -29,5 +29,15 @@ export function looksLikeCompileOrTypeError(text: string): boolean {
   // TS2307：找不到相对路径模块时多为漏建文件/路径错，不是缺 npm 包
   if (/error\s+TS2307\b/i.test(t)) return true;
   if (/cannot find module\s+['`]\.\.?\/[^'`]+['`]/i.test(t)) return true;
+  // React + strict TS 常见：useState([]) 推断 never[]、隐式 any、缺页面文件
+  if (/setstateaction<\s*never/i.test(t)) return true;
+  if (/implicitly has an 'any' type/i.test(t)) return true;
+  if (/does not exist on type 'never'/i.test(t)) return true;
+  if (
+    /is not assignable to parameter of type/i.test(t) &&
+    /setstateaction/i.test(t)
+  ) {
+    return true;
+  }
   return false;
 }

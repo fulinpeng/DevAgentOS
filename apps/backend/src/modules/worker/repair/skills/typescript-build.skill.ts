@@ -20,9 +20,14 @@ const TS_BUILD_REPAIR_HINT = `
 2) 用 writeFile 写回修正后的完整文件内容；可多个文件分多步
 3) 非缺包场景不要只用 pnpm install；缺模块报错再考虑 install
 4) 仍须遵守：path 无 ..、禁止 pnpm run dev 等长期命令；需要验证可用 pnpm run build
+
+# React / TS 常见模式（务必对症）
+- TS2345 / SetStateAction<never[]> / 「Argument … is not assignable」：多为 useState([]) 被推断成 never[]。请为 state 声明元素类型，例如 useState<ImageItem[]>([]) 或 useState<Array<{ id: number; name: string }>>([])，并与 setState 传入数组元素类型一致。
+- TS7006「Parameter 'e' implicitly has an 'any' type」：为事件参数补类型，如 React.ChangeEvent<HTMLInputElement>、React.FormEvent 等（需保证文件顶部有正确 import）。
+- TS2307 找不到 ../pages/Xxx：在报错路径下新建对应 .tsx（或修正 import 路径与文件名大小写一致）；组件需与路由/父组件用法匹配（可先 readFile 引用方再写新文件）。
 `;
 
-const MAX_FIX_STEPS = 8;
+const MAX_FIX_STEPS = 10;
 
 function parseFixSteps(raw: string): WorkerLlmStep[] | null {
   const text = raw.trim();
