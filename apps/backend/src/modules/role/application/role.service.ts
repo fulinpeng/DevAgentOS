@@ -115,16 +115,6 @@ export class RoleService {
         pausedForApproval: true,
       };
     }
-    if (route === 'blocked_failed') {
-      return {
-        task,
-        workerResult: {
-          success: false,
-          result: jsonToResultRecord(task.result),
-        },
-        idempotent: true,
-      };
-    }
     if (route === 'return_completed') {
       return {
         task,
@@ -158,16 +148,6 @@ export class RoleService {
           workerResult: { success: false, result: {} },
           idempotent: true,
           pausedForApproval: true,
-        };
-      }
-      if (r2 === 'blocked_failed') {
-        return {
-          task: latest,
-          workerResult: {
-            success: false,
-            result: jsonToResultRecord(latest.result),
-          },
-          idempotent: true,
         };
       }
       if (r2 === 'return_completed') {

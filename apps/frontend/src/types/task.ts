@@ -68,6 +68,15 @@ export type TaskVersionRow = {
   createdAt: string
 }
 
+/** POST /task/:id/rerun — FAILED 重置并重新执行 */
+export type TaskRerunResponse = {
+  task: { id: string; name: string; status: string }
+  workerResult: { success: boolean; result: Record<string, unknown> }
+  idempotent?: boolean
+  pausedForApproval?: boolean
+  workerPaused?: boolean
+}
+
 /** POST /task/refine/:taskId/execute — 同任务重跑（先置 PENDING 再 Role） */
 export type ExecuteRefinementResponse = {
   task: { id: string; name: string; status: string }

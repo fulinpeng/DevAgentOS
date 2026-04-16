@@ -25,8 +25,8 @@ describe('routeRoleExecution', () => {
     );
   });
 
-  it('FAILED → blocked_failed', () => {
-    expect(routeRoleExecution({ status: 'FAILED' })).toBe('blocked_failed');
+  it('FAILED → execute（可重试）', () => {
+    expect(routeRoleExecution({ status: 'FAILED' })).toBe('execute');
   });
 
   it('CREATED → blocked_plan', () => {
@@ -59,7 +59,7 @@ describe('decideExecution', () => {
     expect(decideExecution({ status: 'RUNNING' })).toBe(false);
     expect(decideExecution({ status: 'COMPLETED' })).toBe(false);
     expect(decideExecution({ status: 'WAITING_APPROVAL' })).toBe(false);
-    expect(decideExecution({ status: 'FAILED' })).toBe(false);
+    expect(decideExecution({ status: 'FAILED' })).toBe(true);
     expect(decideExecution({ status: 'CREATED' })).toBe(false);
     expect(decideExecution({ status: 'PLAN_APPROVED' })).toBe(false);
   });

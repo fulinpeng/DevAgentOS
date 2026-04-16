@@ -76,6 +76,12 @@ export class TaskQueryController {
     return this.taskQueryService.updateTaskManualStatus(id, body);
   }
 
+  /** FAILED 任务：重置为 PENDING 并重新执行（不要求微调版本） */
+  @Post(':id/rerun')
+  rerunTask(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.taskQueryService.rerunFailedTaskAfterReset(id);
+  }
+
   /** 追加子任务并执行（须已生成计划，见服务内校验） */
   @Post(':id/append')
   appendTask(

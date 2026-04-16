@@ -237,6 +237,41 @@ export class TaskQueryService {
   }
 
   /**
+   * 失败任务：先置 PENDING、清空 result、去掉 workerResumeSteps（与微调执行前准备相同），再 Role/Worker。
+   * 仅 FAILED；含子任务的主任务不可调（由 prepareTaskForRerunAfterRefinement 校验）。
+   */
+  async rerunFailedTaskAfterReset(taskId: string): Promise<{
+    task: { id: string; name: string; status: string };
+    workerResult: { success: boolean; result: Record<string, unknown> };
+    idempotent?: boolean;
+    pausedForApproval?: boolean;
+    workerPaused?: boolean;
+  }> {
+    const task = await this.prisma.task.findUnique({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+    if (task.status !== TaskStatus.FAILED) {
+      throw new BadRequestException(
+        `仅 FAILED 任务可「重置并重新执行」（当前=${task.status}）。WORKER_PAUSED 请用继续执行；COMPLETED 请走任务微调执行。`,
+      );
+    }
+    await this.prepareTaskForRerunAfterRefinement(taskId);
+    const execResult = await this.roleService.executeTask(taskId);
+    return {
+      task: {
+        id: execResult.task.id,
+        name: execResult.task.name,
+        status: execResult.task.status,
+      },
+      workerResult: execResult.workerResult,
+      idempotent: execResult.idempotent,
+      pausedForApproval: execResult.pausedForApproval,
+      workerPaused: execResult.workerPaused,
+    };
+  }
+
+  /**
    * 在同父节点下追加子任务并执行（新 Task + Role）。
    */
   async appendTaskAndRun(

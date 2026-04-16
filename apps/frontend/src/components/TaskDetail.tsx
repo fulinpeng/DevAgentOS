@@ -11,6 +11,7 @@ import type {
   GeneratePlanResponse,
   TaskDetailResponse,
   TaskNode,
+  TaskRerunResponse,
 } from '../types/task'
 import { RiskBadge } from './RiskBadge'
 import { TaskLogs } from './TaskLogs'
@@ -46,6 +47,17 @@ function canAppendChildTask(task: TaskNode, children: TaskNode[]): boolean {
 
 function taskEditableBeforeRun(status: string): boolean {
   return !['RUNNING', 'COMPLETED', 'FAILED', 'WORKER_PAUSED'].includes(status)
+}
+
+/** 与后端 prepareTaskForRerunAfterRefinement 一致：含子任务的主任务不可对主任务单独重跑 */
+function canRerunFailedTask(
+  task: TaskNode,
+  isRoot: boolean,
+  childrenLength: number,
+): boolean {
+  if (task.status !== 'FAILED') return false
+  if (isRoot && childrenLength > 0) return false
+  return true
 }
 
 function TaskRow({
@@ -269,6 +281,21 @@ export function TaskDetail() {
     }
   }
 
+  /** 与微调执行同款：PENDING + 清 result + 去掉 workerResumeSteps，再 POST /role/execute */
+  async function rerunFailedTask() {
+    if (!id) return
+    setBusy(true)
+    setActionErr(null)
+    try {
+      await apiPost<TaskRerunResponse>(`/task/${id}/rerun`)
+      await reload()
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (!id) {
     return <p>无效任务 ID</p>
   }
@@ -327,6 +354,7 @@ export function TaskDetail() {
   const canRefine = canRefineTask(task)
   const canAppend = canAppendChildTask(task, children)
   const canEdit = taskEditableBeforeRun(task.status)
+  const canRerunFailed = canRerunFailedTask(task, isRoot, children.length)
 
   return (
     <div>
@@ -403,6 +431,42 @@ export function TaskDetail() {
               继续执行（从断点续跑）
             </button>
           </div>
+        </div>
+      ) : null}
+
+      {canRerunFailed ? (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h2>任务失败（可重跑）</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            将先<strong>重置</strong>为 <code>PENDING</code>、清空 <code>result</code>、移除参数里的{' '}
+            <code>workerResumeSteps</code>，再<strong>完整走一遍</strong> Role/Worker（与「微调后执行」的准备步骤相同，无需微调版本）。
+            {isRoot ? null : (
+              <>
+                {' '}
+                若父工作流因本任务失败而卡住，成功后可在父任务页再点「运行 Coordinator」继续后续子任务。
+              </>
+            )}
+          </p>
+          {actionErr ? <p className="error">{actionErr}</p> : null}
+          <div className="btn-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void rerunFailedTask()}
+            >
+              重置并重新执行
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {task.status === 'FAILED' && isRoot && children.length > 0 ? (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h2>主任务失败？</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            当前为<strong>带子任务的根任务</strong>，不能在根上整体重跑。请打开<strong>失败的子任务</strong>详情页，在子任务上使用「重置并重新执行」；或修正后使用「运行 Coordinator」。
+          </p>
         </div>
       ) : null}
 

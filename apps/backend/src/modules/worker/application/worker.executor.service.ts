@@ -486,7 +486,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       for (;;) {
         if (!currentId || guard.has(currentId)) break;
         guard.add(currentId);
-        const idHere = currentId;
+        const idHere: string = currentId;
         const row: ChainRow | null = await this.prisma.task.findUnique({
           where: { id: idHere },
           select: chainSelect,
