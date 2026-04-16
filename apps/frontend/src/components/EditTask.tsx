@@ -12,6 +12,10 @@ function stringFromParams(params: unknown, key: string): string {
   return ''
 }
 
+function taskDescriptionFromParams(params: unknown): string {
+  return stringFromParams(params, 'taskDescription')
+}
+
 function projectRootFromParams(params: unknown): string {
   const pr = stringFromParams(params, 'projectRoot')
   if (pr) {
@@ -52,7 +56,7 @@ export function EditTask() {
         setName(task.name)
         const p = task.parameters
         setGoal(stringFromParams(p, 'goal'))
-        setDescription(stringFromParams(p, 'description'))
+        setDescription(taskDescriptionFromParams(p))
         setProjectType(stringFromParams(p, 'projectType'))
         setProjectRoot(projectRootFromParams(p))
         setLoading(false)
@@ -85,7 +89,7 @@ export function EditTask() {
     setBusy(true)
     try {
       const params: Record<string, unknown> = {
-        description: desc,
+        taskDescription: desc,
         goal: goal.trim() || n,
       }
       const pt = projectType.trim()
@@ -137,7 +141,7 @@ export function EditTask() {
       <div className="panel">
         <h2>编辑任务草稿</h2>
         <p className="muted">
-          未开始执行的任务可改名称与 parameters（goal、description、projectType、projectRoot
+          未开始执行的任务可改名称与 parameters（goal、taskDescription、projectType、projectRoot
           等）。详情页亦可用弹框编辑 JSON。
         </p>
 
@@ -168,7 +172,7 @@ export function EditTask() {
           </label>
 
           <label className="form-field">
-            <span>详细需求 description（必填）</span>
+            <span>详细需求 taskDescription（必填）</span>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}

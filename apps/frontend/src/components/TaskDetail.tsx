@@ -19,14 +19,148 @@ import { TaskAppendModal } from './TaskAppendModal'
 import { TaskEditModal } from './TaskEditModal'
 import { TaskRefinementModal } from './TaskRefinementModal'
 
+function prettyJson(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2)
+}
+
+function TaskConfigModal({
+  open,
+  task,
+  onClose,
+}: {
+  open: boolean
+  task: TaskNode | null
+  onClose: () => void
+}) {
+  if (!open || !task) {
+    return null
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        className="modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-config-modal-title"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: 720 }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: 12,
+            marginBottom: 12,
+          }}
+        >
+          <div>
+            <h2
+              id="task-config-modal-title"
+              style={{ margin: 0, fontSize: '1.15rem' }}
+            >
+              任务配置
+            </h2>
+            <p className="muted" style={{ margin: '6px 0 0', fontSize: '0.88rem' }}>
+              {task.name} · <code>{task.id}</code>
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn"
+            aria-label="关闭"
+            onClick={() => onClose()}
+          >
+            关闭
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: 12,
+            marginBottom: 12,
+          }}
+        >
+          <div className="panel" style={{ margin: 0 }}>
+            <strong>基础信息</strong>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              状态：<code>{task.status}</code>
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              角色：<code>{task.role ?? '—'}</code>
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              来源：<code>{task.parameterSourceLabel ?? '—'}</code>
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              顺序：<code>{task.sortOrder}</code>
+            </p>
+          </div>
+          <div className="panel" style={{ margin: 0 }}>
+            <strong>时间信息</strong>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              创建：{new Date(task.createdAt).toLocaleString()}
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              更新：{new Date(task.updatedAt).toLocaleString()}
+            </p>
+            {task.approvalReason ? (
+              <p className="muted" style={{ margin: '8px 0 0' }}>
+                审批原因：{task.approvalReason}
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        <label className="form-field">
+          <span>parameters</span>
+          <textarea
+            readOnly
+            value={prettyJson(task.parameters)}
+            rows={12}
+            style={{ fontFamily: 'ui-monospace, monospace', fontSize: '0.82rem' }}
+          />
+        </label>
+
+        <label className="form-field">
+          <span>result</span>
+          <textarea
+            readOnly
+            value={prettyJson(task.result)}
+            rows={10}
+            style={{ fontFamily: 'ui-monospace, monospace', fontSize: '0.82rem' }}
+          />
+        </label>
+      </div>
+    </div>
+  )
+}
+
 function getDescriptionPreview(params: unknown): string | undefined {
-  if (params && typeof params === 'object' && 'description' in params) {
-    const d = (params as { description?: unknown }).description
-    if (typeof d === 'string' && d.trim().length > 0) {
-      return d.trim()
+  if (params && typeof params === 'object' && 'taskDescription' in params) {
+    const td = (params as { taskDescription?: unknown }).taskDescription
+    if (typeof td === 'string' && td.trim().length > 0) {
+      return td.trim()
     }
   }
   return undefined
+}
+
+function shortTaskName(name: string, max = 20): string {
+  const n = name.trim()
+  if (n.length <= max) {
+    return n
+  }
+  return `${n.slice(0, max)}…`
 }
 
 /** 仅 COMPLETED 可微调 */
@@ -89,9 +223,9 @@ function TaskRow({
   return (
     <tr style={{ background: rowBg }}>
       <td>{depth === 0 ? '—' : t.sortOrder}</td>
-      <td style={{ paddingLeft: `${8 + depth * 16}px` }}>
+      <td style={{ paddingLeft: `${8 + depth * 16}px` }} title={t.name}>
         {depth > 0 ? '└ ' : ''}
-        {t.name}
+        {shortTaskName(t.name)}
       </td>
       <td>
         <code>{t.status}</code>
@@ -126,6 +260,7 @@ export function TaskDetail() {
   const [refineModalOpen, setRefineModalOpen] = useState(false)
   const [editModalOpen, setEditModalOpen] = useState(false)
   const [appendModalOpen, setAppendModalOpen] = useState(false)
+  const [configModalOpen, setConfigModalOpen] = useState(false)
 
   const splitHintBanner =
     splitHintFromGenerate ?? splitHintFromNav ?? undefined
@@ -315,7 +450,14 @@ export function TaskDetail() {
           </p>
         ) : null}
         <nav className="breadcrumb" style={{ marginTop: '1rem' }}>
-          <Link to="/">← 返回任务列表</Link>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => navigate(-1)}
+            style={{ fontSize: '0.88rem' }}
+          >
+            ← 返回上一页
+          </button>
         </nav>
       </div>
     )
@@ -362,7 +504,14 @@ export function TaskDetail() {
         className="breadcrumb"
         style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}
       >
-        <Link to="/">← 列表</Link>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => navigate(-1)}
+          style={{ fontSize: '0.85rem' }}
+        >
+          ← 返回上一页
+        </button>
         {canRefine ? (
           <button
             type="button"
@@ -391,6 +540,14 @@ export function TaskDetail() {
             编辑
           </button>
         ) : null}
+        <button
+          type="button"
+          className="btn"
+          style={{ fontSize: '0.85rem' }}
+          onClick={() => setConfigModalOpen(true)}
+        >
+          配置
+        </button>
       </nav>
 
       {splitHintBanner ? (
@@ -503,7 +660,7 @@ export function TaskDetail() {
               >
                 编辑草稿
               </button>
-              （名称与 parameters JSON，含 description / projectRoot 等）
+              （名称与 parameters JSON，含 taskDescription / projectRoot 等）
             </p>
           ) : null}
           <p className="muted">
@@ -519,7 +676,7 @@ export function TaskDetail() {
             ) : (
               <>
                 {' '}
-                · 未填写 parameters.description，请先
+                · 未填写 parameters.taskDescription，请先
                 <button
                   type="button"
                   className="btn"
@@ -541,7 +698,7 @@ export function TaskDetail() {
                 disabled={busy || !canGeneratePlan}
                 title={
                   !canGeneratePlan
-                    ? '需要 parameters.description 非空（自然语言详细需求）'
+                    ? '需要 parameters.taskDescription 非空（自然语言详细需求）'
                     : undefined
                 }
                 onClick={() => void generatePlan()}
@@ -745,6 +902,12 @@ export function TaskDetail() {
         onClose={() => setRefineModalOpen(false)}
         taskId={id}
         onReloadParent={reload}
+      />
+
+      <TaskConfigModal
+        open={configModalOpen}
+        task={task}
+        onClose={() => setConfigModalOpen(false)}
       />
 
       <TaskLogs

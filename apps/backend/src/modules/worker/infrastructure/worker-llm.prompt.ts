@@ -41,6 +41,8 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 7. writeFile/readFile/listFiles 的 path 须为**相对路径**（相对 projectRoot）；禁止在 path 里写盘符或绝对路径。注意：已存在文件若未显式 overwriteExisting=true，服务端会拒绝覆盖（unsafe_full_overwrite）。
 8. 禁止输出 action 为 noop；禁止空 steps。
 9. 每一步必须真实可执行；runCommand 会**阻塞到命令退出**。开发服务器（dev/preview）不会自行退出，会导致步骤卡死，已被服务端拒绝；请用 build 等命令验证。
+10. 只要任务改动了“行为逻辑”（包括但不限于：新增/修改函数、状态更新流程、事件处理、接口调用、缓存与持久化、副作用、数据流与条件分支），仅 build 通过都不算完成。steps 中必须包含至少一条与本次改动直接对应、且可自动结束的验证命令。选择验证命令前，先检查 \`package.json\` 里已有 scripts，优先复用现成的 \`test / verify / check / e2e\`；不要臆造不存在的脚本。若当前项目确无测试体系，则先补最小测试/验证脚本（及所需依赖/配置），再用 runCommand 实际执行。
+11. 若新增 Vitest/Jest 等测试文件或 \`vitest.config.ts\`：必须让验证命令与 \`package.json\` 一致——要么写入 \`scripts.test\`（如 \`"test": "vitest run"\`）再执行 \`pnpm run test\`，要么直接使用 \`pnpm exec vitest run\`；**禁止**在 scripts 中不存在 \`test\` 时仍调用 \`pnpm run test\`。
 
 只输出 JSON。`;
 

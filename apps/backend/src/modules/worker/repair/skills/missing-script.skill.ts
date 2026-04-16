@@ -2,10 +2,19 @@ import { Injectable } from '@nestjs/common';
 import type { WorkerLlmStep } from '../../application/worker.executor.service';
 import type { RepairSkill } from '../repair-skill.interface';
 import type { FixPlan, RepairContext } from '../repair.types';
+import { extractMissingScriptNameFromRunCommandFailure } from '../run-command-failure-text';
 
-function parseMissingScriptName(err: string): string | null {
-  const m = err.match(/Command\s+"([^"]+)"\s+not\s+found/i);
-  return m?.[1]?.trim() ?? null;
+function isValidationScript(script: string): boolean {
+  return [
+    'test',
+    'verify',
+    'check',
+    'e2e',
+    'vitest',
+    'jest',
+    'playwright',
+    'cypress',
+  ].includes(script.toLowerCase());
 }
 
 function fallbackScript(script: string): string {
@@ -41,10 +50,17 @@ export class MissingScriptRepairSkill implements RepairSkill {
     if (context.failure.tool !== 'runCommand') {
       return { score: 0, reason: 'not runCommand failure' };
     }
-    const err = context.failure.error ?? '';
-    const missing = parseMissingScriptName(err);
+    const missing = extractMissingScriptNameFromRunCommandFailure(
+      context.failure,
+    );
     if (!missing) {
       return { score: 0, reason: 'not missing script error' };
+    }
+    if (isValidationScript(missing)) {
+      return {
+        score: 0,
+        reason: `missing validation script: ${missing} — use llm fallback`,
+      };
     }
     return { score: 0.99, reason: `missing script: ${missing}` };
   }
@@ -54,9 +70,13 @@ export class MissingScriptRepairSkill implements RepairSkill {
     if (m.score <= 0) {
       return null;
     }
-    const err = context.failure.error ?? '';
-    const missing = parseMissingScriptName(err);
+    const missing = extractMissingScriptNameFromRunCommandFailure(
+      context.failure,
+    );
     if (!missing) {
+      return null;
+    }
+    if (isValidationScript(missing)) {
       return null;
     }
     const command = String(context.failure.step.args.command ?? '');

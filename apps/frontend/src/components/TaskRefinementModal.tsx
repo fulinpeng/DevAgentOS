@@ -6,8 +6,8 @@ import type {
 } from '../types/task'
 
 function refinementDescriptionPreview(data: unknown): string {
-  if (data && typeof data === 'object' && 'description' in data) {
-    const d = (data as { description?: unknown }).description
+  if (data && typeof data === 'object' && 'taskDescription' in data) {
+    const d = (data as { taskDescription?: unknown }).taskDescription
     if (typeof d === 'string' && d.trim().length > 0) {
       const t = d.trim()
       return t.length > 100 ? `${t.slice(0, 100)}…` : t

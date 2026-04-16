@@ -25,6 +25,10 @@ const TS_BUILD_REPAIR_HINT = `
 - TS2345 / SetStateAction<never[]> / 「Argument … is not assignable」：多为 useState([]) 被推断成 never[]。请为 state 声明元素类型，例如 useState<ImageItem[]>([]) 或 useState<Array<{ id: number; name: string }>>([])，并与 setState 传入数组元素类型一致。
 - TS7006「Parameter 'e' implicitly has an 'any' type」：为事件参数补类型，如 React.ChangeEvent<HTMLInputElement>、React.FormEvent 等（需保证文件顶部有正确 import）。
 - TS2307 找不到 ../pages/Xxx：在报错路径下新建对应 .tsx（或修正 import 路径与文件名大小写一致）；组件需与路由/父组件用法匹配（可先 readFile 引用方再写新文件）。
+- 对 Vite + React 项目补测试时，优先使用 Vitest + Testing Library；不要引入 Enzyme、React 16 adapter、setupTests 中的 enzyme configure 等过时方案。
+- 若报错来自 src/__tests__/*、src/setupTests.ts、vitest/config、enzyme、@testing-library 等测试工具链，优先修测试文件、src/setupTests.ts、vitest.config.ts 与 package.json test 脚本；不要假设业务组件会导出 getTodos/setTodos 之类未声明符号。
+- Vitest 报错「Invalid Chai property: toBeInTheDocument」等：说明未注册 @testing-library/jest-dom。在 setup 文件（如 src/setupTests.ts）顶部加 \`import '@testing-library/jest-dom/vitest'\`，并在 vitest.config.ts 的 test.setupFiles 中指向该文件；不要误用 pnpm install 解决。
+- 除非报错直接指向入口文件，否则不要把 src/main.tsx 改成测试修复的一部分；除非明显需要 Vite 测试配置，否则不要优先修改 vite.config.ts。
 `;
 
 const MAX_FIX_STEPS = 10;

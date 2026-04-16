@@ -30,7 +30,7 @@ export function NewTask() {
     setBusy(true)
     try {
       const params: Record<string, unknown> = {
-        description: desc,
+        taskDescription: desc,
       }
       const g = goal.trim()
       if (g) {
@@ -100,7 +100,7 @@ export function NewTask() {
           </label>
 
           <label className="form-field">
-            <span>详细需求 description（必填）</span>
+            <span>详细需求 taskDescription（必填）</span>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}

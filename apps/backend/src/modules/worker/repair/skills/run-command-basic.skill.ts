@@ -7,6 +7,11 @@ import {
   looksLikeCompileOrTypeError,
 } from '../run-command-failure-text';
 
+function parseMissingScriptName(text: string): string | null {
+  const m = text.match(/Command\s+"([^"]+)"\s+not\s+found/i);
+  return m?.[1]?.trim() ?? null;
+}
+
 function looksLikeDependencyMissing(errorText: string): boolean {
   const t = errorText.toLowerCase();
   return (
@@ -22,6 +27,18 @@ function buildFixStepsForRunCommand(_ctx: RepairContext): WorkerLlmStep[] {
   return [{ action: 'runCommand', args: { command: 'pnpm install' } }];
 }
 
+function isPackageManagerInstallCommand(command: string): boolean {
+  const c = command.trim().toLowerCase();
+  return (
+    c.startsWith('pnpm install') ||
+    c.startsWith('npm install') ||
+    c.startsWith('npm ci') ||
+    c.startsWith('yarn add') ||
+    c.startsWith('yarn install') ||
+    c.startsWith('pnpm add')
+  );
+}
+
 @Injectable()
 export class RunCommandBasicRepairSkill implements RepairSkill {
   readonly id = 'run-command-basic';
@@ -31,6 +48,17 @@ export class RunCommandBasicRepairSkill implements RepairSkill {
       return { score: 0, reason: 'not runCommand failure' };
     }
     const blob = getRunCommandFailureText(context.failure);
+    const failedCommand = String(context.failure.step.args.command ?? '');
+    if (isPackageManagerInstallCommand(failedCommand)) {
+      return {
+        score: 0,
+        reason: 'package manager install failed — avoid generic install loop',
+      };
+    }
+    const missingScript = parseMissingScriptName(blob);
+    if (missingScript) {
+      return { score: 0, reason: `missing script — avoid generic install retry: ${missingScript}` };
+    }
     if (looksLikeCompileOrTypeError(blob)) {
       return {
         score: 0,

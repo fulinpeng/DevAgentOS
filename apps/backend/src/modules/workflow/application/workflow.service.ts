@@ -105,10 +105,12 @@ export class WorkflowService {
         : undefined;
 
     const goal = readStringParam(parameters, 'goal') ?? parent.name.trim();
-    const description = readStringParam(parameters, 'description');
+    const description =
+      readStringParam(parameters, 'taskDescription') ??
+      readStringParam(parameters, 'description');
     if (!description) {
       throw new BadRequestException(
-        '请先在任务 parameters 中提供非空 description（详细自然语言需求），用于生成 Workflow 计划',
+        '请先在任务 parameters 中提供非空 taskDescription（详细自然语言需求），用于生成 Workflow 计划',
       );
     }
 
@@ -182,7 +184,7 @@ export class WorkflowService {
       : (projectType ?? '').trim() || 'unknown';
     await this.taskRepository.mergeTaskParameters(parent.id, {
       goal,
-      description,
+      taskDescription: description,
       projectType: auditedProjectType,
       ...(parsedOk
         ? { workflowTechStack: workflow!.techStack }

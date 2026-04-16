@@ -1,13 +1,149 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiDelete, apiGet } from '../api/client'
-import type { RootTaskRow } from '../types/task'
+import type { RootTaskRow, TaskDetailResponse, TaskNode } from '../types/task'
 import { riskShort } from './RiskBadge'
+
+function prettyJson(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2)
+}
+
+function shortTaskName(name: string, max = 20): string {
+  const n = name.trim()
+  if (n.length <= max) {
+    return n
+  }
+  return `${n.slice(0, max)}…`
+}
+
+function TaskConfigModal({
+  open,
+  task,
+  onClose,
+}: {
+  open: boolean
+  task: TaskNode | null
+  onClose: () => void
+}) {
+  if (!open || !task) {
+    return null
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        className="modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-config-modal-title"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: 720 }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: 12,
+            marginBottom: 12,
+          }}
+        >
+          <div>
+            <h2
+              id="task-config-modal-title"
+              style={{ margin: 0, fontSize: '1.15rem' }}
+            >
+              任务配置
+            </h2>
+            <p className="muted" style={{ margin: '6px 0 0', fontSize: '0.88rem' }}>
+              {task.name} · <code>{task.id}</code>
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn"
+            aria-label="关闭"
+            onClick={() => onClose()}
+          >
+            关闭
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: 12,
+            marginBottom: 12,
+          }}
+        >
+          <div className="panel" style={{ margin: 0 }}>
+            <strong>基础信息</strong>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              状态：<code>{task.status}</code>
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              角色：<code>{task.role ?? '—'}</code>
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              来源：<code>{task.parameterSourceLabel ?? '—'}</code>
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              顺序：<code>{task.sortOrder}</code>
+            </p>
+          </div>
+          <div className="panel" style={{ margin: 0 }}>
+            <strong>时间信息</strong>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              创建：{new Date(task.createdAt).toLocaleString()}
+            </p>
+            <p className="muted" style={{ margin: '8px 0 0' }}>
+              更新：{new Date(task.updatedAt).toLocaleString()}
+            </p>
+            {task.approvalReason ? (
+              <p className="muted" style={{ margin: '8px 0 0' }}>
+                审批原因：{task.approvalReason}
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        <label className="form-field">
+          <span>parameters</span>
+          <textarea
+            readOnly
+            value={prettyJson(task.parameters)}
+            rows={12}
+            style={{ fontFamily: 'ui-monospace, monospace', fontSize: '0.82rem' }}
+          />
+        </label>
+
+        <label className="form-field">
+          <span>result</span>
+          <textarea
+            readOnly
+            value={prettyJson(task.result)}
+            rows={10}
+            style={{ fontFamily: 'ui-monospace, monospace', fontSize: '0.82rem' }}
+          />
+        </label>
+      </div>
+    </div>
+  )
+}
 
 export function TaskList() {
   const [rows, setRows] = useState<RootTaskRow[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [configTask, setConfigTask] = useState<TaskNode | null>(null)
+  const [configLoading, setConfigLoading] = useState(false)
 
   const reload = useCallback(() => {
     return apiGet<RootTaskRow[]>('/task/list').then(setRows)
@@ -42,6 +178,19 @@ export function TaskList() {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  async function openConfig(id: string) {
+    setConfigLoading(true)
+    setErr(null)
+    try {
+      const detail = await apiGet<TaskDetailResponse>(`/task/${id}`)
+      setConfigTask(detail.task)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setConfigLoading(false)
     }
   }
 
@@ -95,7 +244,7 @@ export function TaskList() {
           ) : (
             rows.map((r) => (
               <tr key={r.id}>
-                <td>{r.name}</td>
+                <td title={r.name}>{shortTaskName(r.name)}</td>
                 <td>
                   <code>{r.status}</code>
                 </td>
@@ -104,6 +253,16 @@ export function TaskList() {
                 <td>{new Date(r.createdAt).toLocaleString()}</td>
                 <td>
                   <Link to={`/task/${r.id}`}>详情</Link>
+                  {' · '}
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: '0.82rem', padding: '2px 8px' }}
+                    disabled={configLoading}
+                    onClick={() => void openConfig(r.id)}
+                  >
+                    {configLoading && configTask?.id !== r.id ? '读取中…' : '配置'}
+                  </button>
                   {' · '}
                   {r.status === 'COMPLETED' ? (
                     <Link to={`/task/${r.id}?refine=1`}>微调</Link>
@@ -139,6 +298,11 @@ export function TaskList() {
           )}
         </tbody>
       </table>
+      <TaskConfigModal
+        open={configTask !== null}
+        task={configTask}
+        onClose={() => setConfigTask(null)}
+      />
     </div>
   )
 }

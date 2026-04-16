@@ -123,6 +123,232 @@ function stepsContainOnlyNoop(steps: WorkerLlmStep[]): boolean {
   return steps.every((s) => normalizeAction(s.action) === 'noop');
 }
 
+function textMentionsBehaviorVerificationRequirement(text: string): boolean {
+  const t = text.toLowerCase();
+  return [
+    'bug',
+    'fix',
+    '修复',
+    '逻辑',
+    '行为',
+    '功能',
+    '函数',
+    '状态',
+    '接口',
+    'api',
+    'event',
+    'handler',
+    'effect',
+    '副作用',
+    '数据流',
+    '条件分支',
+    'localstorage',
+    'sessionstorage',
+    '持久化',
+    '刷新后',
+    '刷新不丢',
+    '页面刷新',
+    'reload',
+    'persist',
+    'persistence',
+  ].some((kw) => t.includes(kw));
+}
+
+function requiresBehaviorVerification(task: WorkerExecuteInput): boolean {
+  const p = task.parameters;
+  const blobs: string[] = [task.name];
+  if (p && typeof p === 'object' && !Array.isArray(p)) {
+    const r = p as Record<string, unknown>;
+    if (typeof r.taskDescription === 'string') blobs.push(r.taskDescription);
+    if (typeof r.goal === 'string') blobs.push(r.goal);
+    if (typeof r.workflowGoal === 'string') blobs.push(r.workflowGoal);
+    if (typeof r.workflowDescription === 'string') {
+      blobs.push(r.workflowDescription);
+    }
+  }
+  return textMentionsBehaviorVerificationRequirement(blobs.join('\n'));
+}
+
+function hasBehaviorVerificationCommand(steps: WorkerLlmStep[]): boolean {
+  return steps.some((s) => {
+    if (normalizeAction(s.action) !== 'runCommand') {
+      return false;
+    }
+    const cmd = String(s.args.command ?? '').toLowerCase();
+    if (!cmd) {
+      return false;
+    }
+    return (
+      cmd.includes(' run test') ||
+      cmd.includes(' run test:') ||
+      cmd.includes(' run verify') ||
+      cmd.includes(' run verify:') ||
+      cmd.includes(' run check') ||
+      cmd.includes(' run check:') ||
+      cmd.includes(' e2e') ||
+      cmd.includes('vitest') ||
+      cmd.includes('jest') ||
+      cmd.includes('playwright') ||
+      cmd.includes('cypress')
+    );
+  });
+}
+
+type MissingVerificationScript = {
+  stepIndex: number;
+  command: string;
+  script: string;
+};
+
+function parseRunScriptName(command: string): string | null {
+  const c = command.trim();
+  let m = c.match(/^(?:pnpm|npm)\s+run\s+([^\s]+)\s*$/i);
+  if (m?.[1]) {
+    return m[1].trim();
+  }
+  m = c.match(/^yarn\s+(?:run\s+)?([^\s]+)\s*$/i);
+  if (m?.[1]) {
+    return m[1].trim();
+  }
+  return null;
+}
+
+function isBehaviorVerificationScriptName(script: string): boolean {
+  const s = script.toLowerCase();
+  return (
+    s === 'test' ||
+    s.startsWith('test:') ||
+    s === 'verify' ||
+    s.startsWith('verify:') ||
+    s === 'check' ||
+    s.startsWith('check:') ||
+    s === 'e2e' ||
+    s.startsWith('e2e:')
+  );
+}
+
+export function findMissingPackageScriptForVerification(
+  steps: WorkerLlmStep[],
+  packageScripts: string[],
+): MissingVerificationScript | null {
+  const known = new Set(packageScripts.map((s) => s.toLowerCase()));
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (normalizeAction(step.action) !== 'runCommand') {
+      continue;
+    }
+    const command = String(step.args.command ?? '').trim();
+    if (!command) {
+      continue;
+    }
+    const script = parseRunScriptName(command);
+    if (!script || !isBehaviorVerificationScriptName(script)) {
+      continue;
+    }
+    if (!known.has(script.toLowerCase())) {
+      return { stepIndex: i, command, script };
+    }
+  }
+  return null;
+}
+
+export function shouldSkipReplayingFailedStepAfterRepairForTest(
+  failure: RepairFailure,
+  remainingStep?: WorkerLlmStep,
+  appliedFixSteps: WorkerLlmStep[] = [],
+): boolean {
+  return shouldSkipReplayingFailedStepAfterRepair(
+    failure,
+    remainingStep,
+    appliedFixSteps,
+  );
+}
+
+export function fingerprintRepairWriteIntentsForTest(
+  failure: RepairFailure,
+  fixSteps: WorkerLlmStep[],
+): string | null {
+  return fingerprintRepairWriteIntents(failure, fixSteps);
+}
+
+function getSuggestedVerificationCommands(): string[] {
+  return [
+    'pnpm run test',
+    'pnpm run verify',
+    'pnpm run check',
+    'pnpm run e2e',
+    'pnpm exec vitest run',
+    'pnpm exec playwright test',
+  ];
+}
+
+function readPackageJsonScripts(baseDir: string): string[] {
+  try {
+    const pkgPath = path.join(baseDir, 'package.json');
+    if (!existsSync(pkgPath)) {
+      return [];
+    }
+    const raw = readFileSync(pkgPath, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return [];
+    }
+    const scripts = (parsed as { scripts?: unknown }).scripts;
+    if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) {
+      return [];
+    }
+    return Object.keys(scripts).filter(Boolean).sort();
+  } catch {
+    return [];
+  }
+}
+
+function buildAcceptanceVerifyRetryPrompt(
+  originalUserPrompt: string,
+  rejectedRaw: string,
+  scripts: string[],
+  missingScript?: MissingVerificationScript | null,
+): string {
+  const scriptBlock =
+    scripts.length > 0
+      ? `当前 package.json 已有 scripts：${scripts.join(', ')}`
+      : '当前 package.json 未发现可复用的验证脚本（test/verify/check/e2e）。';
+  return [
+    originalUserPrompt,
+    '',
+    '# 上一版计划被系统拒绝',
+    missingScript
+      ? `原因：你产出的 steps 虽然包含验证命令，但引用了 package.json 中不存在的脚本：${missingScript.command}（缺少 scripts.${missingScript.script}）。`
+      : '原因：你产出的 steps 修改了行为逻辑，但没有包含与改动直接对应、且可自动结束的验证命令。',
+    '要求：请重新输出完整 steps。',
+    '- 仍需完成代码修改。',
+    '- 必须加入至少一条自动结束的验证命令。',
+    '- 先检查 package.json 里已有 scripts，优先复用 test / verify / check / e2e；不要臆造不存在的脚本。',
+    '- 若项目当前没有测试脚本，你必须先新增最小测试/验证脚本（以及必要依赖/配置），再在 steps 中实际执行它。',
+    '- 可接受示例：pnpm run test / pnpm run verify / pnpm run check / pnpm exec vitest run / pnpm exec playwright test。',
+    '- 若你打算执行 pnpm run test / verify / check / e2e，必须同步修改 package.json scripts，或改用 pnpm exec vitest run 等不依赖 scripts 的命令。',
+    '- 不要只输出 build；build 可保留，但不能作为唯一验收。',
+    '',
+    '# package.json 脚本信息',
+    scriptBlock,
+    '',
+    '# 被拒绝的原始输出（供参考，避免重复犯错）',
+    rejectedRaw,
+  ].join('\n');
+}
+
+type AcceptanceRecoveryInput = {
+  task: WorkerExecuteInput;
+  baseDir: string;
+  projectRoot: string;
+  workflowTechStack: string[];
+  taskTechStack: string[];
+  narrative: RepairContext['narrative'];
+  rawPlan: string;
+  packageScripts: string[];
+  retried: boolean;
+};
+
 function parseWorkerResumeSteps(
   parameters: Record<string, unknown> | null,
 ): WorkerLlmStep[] | null {
@@ -320,6 +546,9 @@ const REPAIR_PROTECTED_PATHS = [
   'src/router/index.tsx',
   'src/router/routes.tsx',
   'package.json',
+  'tsconfig.json',
+  'tsconfig.app.json',
+  'tsconfig.node.json',
   'vite.config.ts',
 ] as const;
 
@@ -339,12 +568,113 @@ function fingerprintRepairPlan(
   return `${failureSig}>>${stepsSig.join('||')}`;
 }
 
+function fingerprintRepairWriteIntents(
+  failure: RepairFailure,
+  fixSteps: WorkerLlmStep[],
+): string | null {
+  const writes = fixSteps
+    .filter((s) => normalizeAction(s.action) === 'writeFile')
+    .map((s) => ({
+      path: normalizeRelPathForPolicy(s.args.path),
+      content: String(s.args.content ?? ''),
+    }))
+    .filter((x) => x.path);
+  if (writes.length === 0) {
+    return null;
+  }
+  const failureSig = `${failure.tool}|${String(failure.error ?? '').slice(0, 300)}`;
+  const writeSig = writes
+    .sort((a, b) => a.path.localeCompare(b.path) || a.content.localeCompare(b.content))
+    .map((x) => `${x.path}:${x.content}`)
+    .join('||');
+  return `${failureSig}>>${writeSig}`;
+}
+
 function mentionsAnyPath(text: string, paths: readonly string[]): boolean {
   const t = text.toLowerCase().replace(/\\/g, '/');
   return paths.some((p) => t.includes(p.toLowerCase()));
 }
 
-function sanitizeRepairStepsByPolicy(
+function isTestConfigRelatedCompileFailure(text: string): boolean {
+  const t = text.toLowerCase().replace(/\\/g, '/');
+  return [
+    'vitest/config',
+    'src/__tests__/',
+    '.test.ts',
+    '.test.tsx',
+    '.spec.ts',
+    '.spec.tsx',
+    'setuptests.ts',
+    'enzyme',
+    '@testing-library',
+    'jest-dom',
+  ].some((needle) => t.includes(needle));
+}
+
+function isMissingValidationScriptFailure(failure: RepairFailure): boolean {
+  if (failure.tool !== 'runCommand') {
+    return false;
+  }
+  const cmd = String(failure.step.args.command ?? '').toLowerCase();
+  const likelyValidationCmd =
+    cmd.includes(' run test') ||
+    cmd.includes(' run verify') ||
+    cmd.includes(' run check') ||
+    cmd.includes(' run e2e') ||
+    cmd.includes(' run vitest');
+  if (!likelyValidationCmd) {
+    return false;
+  }
+  const text = getRunCommandFailureText(failure).toLowerCase();
+  return (
+    text.includes('command "test" not found') ||
+    text.includes('command "verify" not found') ||
+    text.includes('command "check" not found') ||
+    text.includes('command "e2e" not found') ||
+    text.includes('command "vitest" not found') ||
+    text.includes('missing script: "test"') ||
+    text.includes("missing script: 'test'") ||
+    text.includes('missing script: "verify"') ||
+    text.includes("missing script: 'verify'") ||
+    text.includes('missing script: "check"') ||
+    text.includes("missing script: 'check'") ||
+    text.includes('missing script: "e2e"') ||
+    text.includes("missing script: 'e2e'") ||
+    text.includes('missing script: "vitest"') ||
+    text.includes("missing script: 'vitest'")
+  );
+}
+
+function shouldSkipReplayingFailedStepAfterRepair(
+  failure: RepairFailure,
+  remainingStep: WorkerLlmStep | undefined,
+  appliedFixSteps: WorkerLlmStep[],
+): boolean {
+  const unsafeOverwriteSkip =
+    failure.tool === 'writeFile' &&
+    String(failure.error ?? '').includes('unsafe_full_overwrite');
+  if (unsafeOverwriteSkip) {
+    return true;
+  }
+  if (failure.tool !== 'runCommand') {
+    return false;
+  }
+  if (!remainingStep || normalizeAction(remainingStep.action) !== 'runCommand') {
+    return false;
+  }
+  const failedCommand = String(failure.step.args.command ?? '').trim();
+  const replayCommand = String(remainingStep.args.command ?? '').trim();
+  if (!failedCommand || !replayCommand || failedCommand !== replayCommand) {
+    return false;
+  }
+  return appliedFixSteps.some(
+    (s) =>
+      normalizeAction(s.action) === 'runCommand' &&
+      String(s.args.command ?? '').trim() === failedCommand,
+  );
+}
+
+export function sanitizeRepairStepsByPolicy(
   failure: RepairFailure,
   steps: WorkerLlmStep[],
 ): { ok: true; steps: WorkerLlmStep[] } | { ok: false; reason: string } {
@@ -366,6 +696,15 @@ function sanitizeRepairStepsByPolicy(
     .filter((s) => normalizeAction(s.action) === 'writeFile')
     .map((s) => normalizeRelPathForPolicy(s.args.path))
     .filter(Boolean);
+  const repeatedWritePaths = Array.from(
+    new Set(writePaths.filter((p, i) => writePaths.indexOf(p) !== i)),
+  );
+  if (repeatedWritePaths.length > 0) {
+    return {
+      ok: false,
+      reason: `repair writes same file multiple times: ${repeatedWritePaths.join(', ')}`,
+    };
+  }
   const writeSet = new Set(writePaths);
   if (writeSet.size > REPAIR_MAX_WRITE_FILES) {
     return {
@@ -379,13 +718,29 @@ function sanitizeRepairStepsByPolicy(
     const touchesProtected = Array.from(writeSet).filter((p) =>
       REPAIR_PROTECTED_PATHS.some((root) => p === root || p.endsWith(`/${root}`)),
     );
+    const allowedProtected = new Set<string>();
     if (
-      touchesProtected.length > 0 &&
-      !mentionsAnyPath(failureText, touchesProtected)
+      isTestConfigRelatedCompileFailure(failureText) &&
+      touchesProtected.includes('vite.config.ts')
+    ) {
+      allowedProtected.add('vite.config.ts');
+    }
+    if (
+      isMissingValidationScriptFailure(failure) &&
+      touchesProtected.includes('package.json')
+    ) {
+      allowedProtected.add('package.json');
+    }
+    const blockedProtected = touchesProtected.filter(
+      (p) => !allowedProtected.has(p),
+    );
+    if (
+      blockedProtected.length > 0 &&
+      !mentionsAnyPath(failureText, blockedProtected)
     ) {
       return {
         ok: false,
-        reason: `repair touches protected files without direct error evidence: ${touchesProtected.join(', ')}`,
+        reason: `repair touches protected files without direct error evidence: ${blockedProtected.join(', ')}`,
       };
     }
   }
@@ -414,6 +769,57 @@ export class WorkerExecutorService implements IWorkerExecutor {
     private readonly fileContext: FileContextService,
     private readonly repairEngine: RepairEngine,
   ) {}
+
+  private async recoverMissingAcceptanceVerification(
+    input: AcceptanceRecoveryInput,
+  ): Promise<WorkerExecuteOutput | null> {
+    const workflowOutline = await this.fetchWorkflowOutlineForRepair(input.task.id);
+    const context: RepairContext = {
+      taskId: input.task.id,
+      projectRoot: input.projectRoot,
+      workflowTechStack: input.workflowTechStack,
+      taskTechStack: input.taskTechStack,
+      attempt: 1,
+      maxAttempts: 1,
+      remainingSteps: [],
+      failure: {
+        stepIndex: -1,
+        step: { action: 'runCommand', args: { command: 'pnpm run build' } },
+        tool: 'runCommand',
+        error: 'worker_llm_missing_acceptance_verify',
+        data: {
+          rawPlan: input.rawPlan,
+          packageScripts: input.packageScripts,
+          retried: input.retried,
+        },
+      },
+      history: [],
+      narrative: input.narrative,
+      ...(workflowOutline ? { workflowOutline } : {}),
+      executedStepsPreview: [],
+    };
+    const plan = await this.repairEngine.planFixSteps(context);
+    if (!plan || plan.fixSteps.length === 0) {
+      return null;
+    }
+    await this.taskRedis.appendExecutionLog(input.task.id, {
+      step: 'worker_llm_acceptance_repair_selected',
+      time: new Date().toISOString(),
+      meta: {
+        skillId: plan.skillId,
+        category: plan.category,
+        score: plan.score,
+        reason: plan.reason,
+        fixStepsCount: plan.fixSteps.length,
+      },
+    });
+    return this.runWorkerSteps(
+      input.task,
+      plan.fixSteps,
+      input.baseDir,
+      input.projectRoot,
+    );
+  }
 
   async execute(task: WorkerExecuteInput): Promise<WorkerExecuteOutput> {
     const projectRootRaw = await resolveProjectRootFromTaskChain(
@@ -491,6 +897,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
 
     const { taskDescription, goal } = extractTaskContext(task);
     const { workflowTechStack, taskTechStack } = extractTechStacks(task);
+    const narrative = extractRepairNarrative(task);
     const deepFileTree = this.fileContext.getFileTree(baseDir);
     const importantFiles = this.fileContext.getImportantFiles(baseDir, {
       taskName: task.name,
@@ -594,6 +1001,98 @@ export class WorkerExecutorService implements IWorkerExecutor {
           error: 'worker_llm_rejected_noop',
           message:
             '模型返回了 noop；当前策略要求必须产出可执行步骤（如 runCommand、writeFile）。',
+          raw: clipped.text,
+        },
+      };
+    }
+
+    const packageScripts = readPackageJsonScripts(baseDir);
+    const missingVerificationScript = requiresBehaviorVerification(task)
+      ? findMissingPackageScriptForVerification(steps, packageScripts)
+      : null;
+    if (
+      requiresBehaviorVerification(task) &&
+      (!hasBehaviorVerificationCommand(steps) || missingVerificationScript)
+    ) {
+      const retryUser = buildAcceptanceVerifyRetryPrompt(
+        user,
+        raw,
+        packageScripts,
+        missingVerificationScript,
+      );
+      let retryRaw: string | null = null;
+      try {
+        retryRaw = await this.llm.callLLM(WORKER_TOOL_SYSTEM_PROMPT, retryUser);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'worker_llm_acceptance_retry_error',
+          time: new Date().toISOString(),
+          meta: { message: msg.slice(0, 300) },
+        });
+      }
+      if (retryRaw) {
+        const retrySteps = parseWorkerLlmOutput(retryRaw);
+        if (
+          retrySteps &&
+          retrySteps.length > 0 &&
+          !stepsContainOnlyNoop(retrySteps) &&
+          hasBehaviorVerificationCommand(retrySteps) &&
+          !findMissingPackageScriptForVerification(retrySteps, packageScripts)
+        ) {
+          const clippedRetryOk = clipLlmRawForRedis(this.config, retryRaw);
+          await this.taskRedis.appendExecutionLog(task.id, {
+            step: 'worker_llm_acceptance_retry_ok',
+            time: new Date().toISOString(),
+            meta: {
+              stepCount: retrySteps.length,
+              raw: clippedRetryOk.text,
+              rawChars: clippedRetryOk.totalChars,
+              rawTruncated: clippedRetryOk.truncated,
+            },
+          });
+          return this.runWorkerSteps(task, retrySteps, baseDir, projectRoot);
+        }
+      }
+
+      const finalRaw = retryRaw ?? raw;
+      const recovered = await this.recoverMissingAcceptanceVerification({
+        task,
+        baseDir,
+        projectRoot,
+        workflowTechStack,
+        taskTechStack,
+        narrative,
+        rawPlan: finalRaw,
+        packageScripts,
+        retried: retryRaw !== null,
+      });
+      if (recovered) {
+        return recovered;
+      }
+
+      const clipped = clipLlmRawForRedis(this.config, finalRaw);
+      await this.taskRedis.appendExecutionLog(task.id, {
+        step: 'worker_llm_missing_acceptance_verify',
+        time: new Date().toISOString(),
+        meta: {
+          hint:
+            missingVerificationScript
+              ? `计划中的验证命令引用了不存在的 package.json script（${missingVerificationScript.script}）。请改为复用已有 scripts，补充 scripts.${missingVerificationScript.script}，或改用 pnpm exec vitest run。可参考：${getSuggestedVerificationCommands().join(' / ')}`
+              : `任务涉及行为逻辑变更，必须在 steps 中加入与改动直接对应、可自动结束的验证命令；优先复用 package.json 现有 scripts，不要臆造脚本。可参考：${getSuggestedVerificationCommands().join(' / ')}`,
+          raw: clipped.text,
+          retried: retryRaw !== null,
+          packageScripts,
+        },
+      });
+      return {
+        success: false,
+        result: {
+          error: 'worker_llm_missing_acceptance_verify',
+          message:
+            missingVerificationScript
+              ? `检测到计划中的行为验证命令引用了不存在的脚本 ${missingVerificationScript.script}。请补充 package.json scripts，或改用 pnpm exec vitest run 等真实可执行命令后重试。`
+              : '检测到行为逻辑变更，但计划仅含 build 或缺少行为验证。请补充与改动直接对应的 test/e2e/verify/check 步骤后重试。',
           raw: clipped.text,
         },
       };
@@ -777,6 +1276,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
     let attempt = 0;
     const history: RepairContext['history'] = [];
     const seenRepairPlanFingerprints = new Set<string>();
+    const seenRepairWriteIntentFingerprints = new Set<string>();
 
     while (true) {
       const run = await this.executeStepsInternal(
@@ -980,6 +1480,10 @@ export class WorkerExecutorService implements IWorkerExecutor {
         effectiveRun.failure,
         plan.fixSteps,
       );
+      const repairWriteIntentFp = fingerprintRepairWriteIntents(
+        effectiveRun.failure,
+        plan.fixSteps,
+      );
       if (seenRepairPlanFingerprints.has(repairPlanFp)) {
         await this.taskRedis.appendExecutionLog(task.id, {
           step: 'repair_plan_dedup_hit',
@@ -1016,6 +1520,47 @@ export class WorkerExecutorService implements IWorkerExecutor {
         };
       }
       seenRepairPlanFingerprints.add(repairPlanFp);
+      if (
+        repairWriteIntentFp &&
+        seenRepairWriteIntentFingerprints.has(repairWriteIntentFp)
+      ) {
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'repair_write_intent_dedup_hit',
+          time: new Date().toISOString(),
+          meta: {
+            attempt,
+            skillId: plan.skillId,
+            category: plan.category,
+          },
+        });
+        return {
+          success: false,
+          result: {
+            mode: 'steps',
+            failedAtIndex: effectiveRun.failure.stepIndex,
+            steps: allResults,
+            error: 'repair_write_intent_dedup_hit',
+            lastTool: effectiveRun.failure.tool,
+            repair: buildRepairSnapshot({
+              state: 'exhausted',
+              attempt,
+              maxAttempts,
+              lastFailure: effectiveRun.failure,
+              remainingSteps: effectiveRun.remainingSteps,
+              history,
+              selectedSkill: {
+                skillId: plan.skillId,
+                score: plan.score,
+                category: plan.category,
+                reason: 'duplicate repair write intent detected',
+              },
+            }),
+          },
+        };
+      }
+      if (repairWriteIntentFp) {
+        seenRepairWriteIntentFingerprints.add(repairWriteIntentFp);
+      }
 
       await this.taskRedis.appendExecutionLog(task.id, {
         step: 'repair_plan_selected',
@@ -1051,8 +1596,14 @@ export class WorkerExecutorService implements IWorkerExecutor {
         currentSteps = fixRun.remainingSteps;
         continue;
       }
-      // 修复成功后继续跑失败点及其后续步骤
-      currentSteps = effectiveRun.remainingSteps;
+      // 某些策略类失败（如 unsafe_full_overwrite）修复后不应再原样重放失败步。
+      currentSteps = shouldSkipReplayingFailedStepAfterRepair(
+        effectiveRun.failure,
+        effectiveRun.remainingSteps[0],
+        plan.fixSteps,
+      )
+        ? effectiveRun.remainingSteps.slice(1)
+        : effectiveRun.remainingSteps;
     }
   }
 }

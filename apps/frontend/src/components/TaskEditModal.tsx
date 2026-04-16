@@ -11,6 +11,7 @@ type Props = {
 
 export function TaskEditModal({ open, onClose, task, onSaved }: Props) {
   const [name, setName] = useState('')
+  const [describe, setDescribe] = useState('')
   const [role, setRole] = useState('')
   const [sortOrder, setSortOrder] = useState(0)
   const [paramsJson, setParamsJson] = useState('{}')
@@ -23,6 +24,15 @@ export function TaskEditModal({ open, onClose, task, onSaved }: Props) {
     }
     setErr(null)
     setName(task.name)
+    const p = task.parameters
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      const r = p as Record<string, unknown>
+      const td =
+        typeof r.taskDescription === 'string' ? r.taskDescription.trim() : ''
+      setDescribe(td)
+    } else {
+      setDescribe('')
+    }
     setRole(task.role ?? '')
     setSortOrder(task.sortOrder)
     setParamsJson(JSON.stringify(task.parameters ?? {}, null, 2))
@@ -54,7 +64,10 @@ export function TaskEditModal({ open, onClose, task, onSaved }: Props) {
         name: name.trim(),
         role: role.trim(),
         sortOrder,
-        parameters,
+        parameters: {
+          ...parameters,
+          taskDescription: describe.trim(),
+        },
       })
       onSaved(detail)
       onClose()
@@ -117,6 +130,18 @@ export function TaskEditModal({ open, onClose, task, onSaved }: Props) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
+            placeholder="简短标题（用于列表展示）"
+            autoComplete="off"
+          />
+        </label>
+        <label className="form-field">
+          <span>描述 describe / taskDescription</span>
+          <textarea
+            value={describe}
+            onChange={(e) => setDescribe(e.target.value)}
+            rows={5}
+            disabled={busy}
+            placeholder="这里填写给 LLM 的详细任务描述"
             autoComplete="off"
           />
         </label>
@@ -154,7 +179,7 @@ export function TaskEditModal({ open, onClose, task, onSaved }: Props) {
           <button
             type="button"
             className="btn btn-primary"
-            disabled={busy || !name.trim()}
+            disabled={busy || !name.trim() || !describe.trim()}
             onClick={() => void save()}
           >
             {busy ? '保存中…' : '保存'}

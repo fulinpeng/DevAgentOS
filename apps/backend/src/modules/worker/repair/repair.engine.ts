@@ -4,10 +4,14 @@ import type { FixPlan, RepairContext } from './repair.types';
 import { ConfigErrorRepairSkill } from './skills/config-error.skill';
 import { LlmFallbackRepairSkill } from './skills/llm-fallback.skill';
 import { LongRunningCommandRepairSkill } from './skills/long-running-command.skill';
+import { MissingAcceptanceVerifyRepairSkill } from './skills/missing-acceptance-verify.skill';
 import { MissingScriptRepairSkill } from './skills/missing-script.skill';
+import { MissingValidationScriptRepairSkill } from './skills/missing-validation-script.skill';
 import { PathSandboxRepairSkill } from './skills/path-sandbox.skill';
+import { ReadFileEnoentRepairSkill } from './skills/readfile-enoent.skill';
 import { RunCommandBasicRepairSkill } from './skills/run-command-basic.skill';
 import { TypeScriptBuildRepairSkill } from './skills/typescript-build.skill';
+import { UnsafeFullOverwriteRepairSkill } from './skills/unsafe-full-overwrite.skill';
 
 @Injectable()
 export class RepairEngine {
@@ -16,8 +20,12 @@ export class RepairEngine {
 
   constructor(
     longRunningCommand: LongRunningCommandRepairSkill,
+    missingAcceptanceVerify: MissingAcceptanceVerifyRepairSkill,
     pathSandbox: PathSandboxRepairSkill,
+    readFileEnoent: ReadFileEnoentRepairSkill,
+    unsafeFullOverwrite: UnsafeFullOverwriteRepairSkill,
     missingScript: MissingScriptRepairSkill,
+    missingValidationScript: MissingValidationScriptRepairSkill,
     configError: ConfigErrorRepairSkill,
     typescriptBuild: TypeScriptBuildRepairSkill,
     runCommandBasic: RunCommandBasicRepairSkill,
@@ -25,8 +33,12 @@ export class RepairEngine {
   ) {
     this.skills = [
       longRunningCommand,
+      missingAcceptanceVerify,
       pathSandbox,
+      readFileEnoent,
+      unsafeFullOverwrite,
       missingScript,
+      missingValidationScript,
       configError,
       typescriptBuild,
       runCommandBasic,
