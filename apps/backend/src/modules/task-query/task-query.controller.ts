@@ -89,7 +89,7 @@ export class TaskQueryController {
     return this.taskQueryService.rerunFailedTaskAfterReset(id);
   }
 
-  /** 追加子任务并执行（须已生成计划，见服务内校验） */
+  /** 在当前任务下追加子任务，并触发树形协调执行（须满足服务内校验） */
   @Post(':id/append')
   appendTask(
     @Param('id', new ParseUUIDPipe()) id: string,

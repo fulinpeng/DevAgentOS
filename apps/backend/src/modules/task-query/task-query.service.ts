@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ConflictException,
+  forwardRef,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -10,6 +12,7 @@ import { Prisma, Task, TaskStatus } from '@prisma/client';
 import { TaskRedis } from '../../infrastructure/redis/task.redis';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TASK_STATUS_WORKER_PAUSED } from '../../prisma/task-status';
+import { CoordinatorService } from '../coordinator/application/coordinator.service';
 import { RoleService } from '../role/application/role.service';
 import {
   approvalReason,
@@ -35,6 +38,8 @@ export type TaskDetailNode = Task & {
   approvalReason: string | null;
   /** low | medium | high */
   riskLevel: string;
+  hasChildren: boolean;
+  isCoordinatorNode: boolean;
 };
 
 export type TaskDetailPayload = {
@@ -50,6 +55,8 @@ export type RootTaskListItem = {
   createdAt: Date;
   /** low | medium | high */
   riskLevel: string;
+  hasChildren: boolean;
+  isCoordinatorNode: boolean;
 };
 
 function isTaskEditableBeforeExecution(status: TaskStatus): boolean {
@@ -88,6 +95,8 @@ export class TaskQueryService {
     private readonly prisma: PrismaService,
     private readonly taskRedis: TaskRedis,
     private readonly roleService: RoleService,
+    @Inject(forwardRef(() => CoordinatorService))
+    private readonly coordinatorService: CoordinatorService,
   ) {}
 
   /** 根及其所有后代任务 id（BFS，含根） */
@@ -154,6 +163,8 @@ export class TaskQueryService {
         name: r.name,
         parameters: r.parameters,
       }),
+      hasChildren: r._count.children > 0,
+      isCoordinatorNode: r._count.children > 0,
     }));
   }
 
@@ -168,13 +179,31 @@ export class TaskQueryService {
       throw new NotFoundException(`Task ${taskId} not found`);
     }
     const { children, ...task } = row;
+    const ids = [task.id, ...children.map((c) => c.id)];
+    const allKids = await this.prisma.task.findMany({
+      where: { parentId: { in: ids } },
+      select: { parentId: true },
+    });
+    const childCountByParent = new Map<string, number>();
+    for (const k of allKids) {
+      if (!k.parentId) {
+        continue;
+      }
+      childCountByParent.set(
+        k.parentId,
+        (childCountByParent.get(k.parentId) ?? 0) + 1,
+      );
+    }
     const enrich = (t: Task): TaskDetailNode => {
       const snap = { name: t.name, parameters: t.parameters };
+      const childCount = childCountByParent.get(t.id) ?? 0;
       return {
         ...t,
         parameterSourceLabel: parameterSourceLabel(snap),
         approvalReason: approvalReason(snap),
         riskLevel: resolveRiskLevelForDisplay(snap),
+        hasChildren: childCount > 0,
+        isCoordinatorNode: childCount > 0,
       };
     };
     return {
@@ -337,7 +366,7 @@ export class TaskQueryService {
     }
     await assertCanAppendChildTask(this.prisma, source);
 
-    const parentId = source.parentId ?? source.id;
+    const parentId = source.id;
     const agg = await this.prisma.task.aggregate({
       where: { parentId },
       _max: { sortOrder: true },
@@ -361,25 +390,67 @@ export class TaskQueryService {
       },
     });
 
+    if (source.status === TaskStatus.COMPLETED) {
+      await this.prisma.task.update({
+        where: { id: source.id },
+        data: { status: TaskStatus.PLAN_APPROVED },
+      });
+      await this.taskRedis.setTaskStatus(source.id, 'plan_approved');
+      await this.taskRedis.appendExecutionLog(source.id, {
+        step: 'task_reopened_for_coordination',
+        time: new Date().toISOString(),
+        meta: { reason: 'append_child_to_completed_task', newTaskId: newTask.id },
+      });
+    }
+
     await this.taskRedis.appendExecutionLog(sourceTaskId, {
       step: 'task_append_created',
       time: new Date().toISOString(),
       meta: { newTaskId: newTask.id, source: 'POST /task/:id/append' },
     });
 
-    const execResult = await this.roleService.executeTask(newTask.id);
+    const rootId = await this.findRootTaskId(source.id);
+    const runResult = await this.coordinatorService.runForParent(rootId);
+    const refreshed = await this.prisma.task.findUnique({ where: { id: newTask.id } });
+    const nextTask = refreshed ?? newTask;
 
     return {
       newTask: {
-        id: execResult.task.id,
-        name: execResult.task.name,
-        status: execResult.task.status,
+        id: nextTask.id,
+        name: nextTask.name,
+        status: nextTask.status,
       },
-      workerResult: execResult.workerResult,
-      idempotent: execResult.idempotent,
-      pausedForApproval: execResult.pausedForApproval,
-      workerPaused: execResult.workerPaused,
+      coordinator: {
+        parent: {
+          id: runResult.parent.id,
+          status: runResult.parent.status,
+        },
+        executedTaskIds: runResult.executedTaskIds,
+      },
     };
+  }
+
+  private async findRootTaskId(taskId: string): Promise<string> {
+    const first = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { id: true, parentId: true },
+    });
+    if (!first) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+    let current: { id: string; parentId: string | null } = first;
+    while (current.parentId) {
+      const pid: string = current.parentId;
+      const parent = await this.prisma.task.findUnique({
+        where: { id: pid },
+        select: { id: true, parentId: true },
+      });
+      if (!parent) {
+        break;
+      }
+      current = parent;
+    }
+    return current.id;
   }
 
   /**

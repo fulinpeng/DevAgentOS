@@ -8,7 +8,7 @@ import {
 import { Task, TaskStatus } from '@prisma/client';
 import { TaskRedis } from '../../../infrastructure/redis/task.redis';
 import { RoleService } from '../../role/application/role.service';
-import { getNextTask } from '../domain/scheduling';
+import { getNextTaskInTree, isSubtreeCompleted } from '../domain/scheduling';
 import { CoordinatorRepository } from '../infrastructure/coordinator.repository';
 
 export type CoordinatorRunResult = {
@@ -25,63 +25,108 @@ export class CoordinatorService {
     private readonly taskRedis: TaskRedis,
   ) {}
 
+  private async completeReadyCoordinatorNodes(rootId: string): Promise<void> {
+    for (;;) {
+      const tree = await this.repository.findSubtree(rootId);
+      if (!tree) {
+        return;
+      }
+      const childrenByParent = new Map<string, Task[]>();
+      for (const n of tree.nodes) {
+        if (!n.parentId) {
+          continue;
+        }
+        const arr = childrenByParent.get(n.parentId) ?? [];
+        arr.push(n);
+        childrenByParent.set(n.parentId, arr);
+      }
+      const allDescCompleted = (id: string): boolean => {
+        const children = childrenByParent.get(id) ?? [];
+        for (const c of children) {
+          if (c.status !== TaskStatus.COMPLETED) {
+            return false;
+          }
+          if (!allDescCompleted(c.id)) {
+            return false;
+          }
+        }
+        return true;
+      };
+      const depthOf = (id: string): number => {
+        let d = 0;
+        let cur = tree.nodes.find((x) => x.id === id) ?? null;
+        while (cur?.parentId) {
+          d += 1;
+          cur = tree.nodes.find((x) => x.id === cur!.parentId) ?? null;
+        }
+        return d;
+      };
+      const ready = tree.nodes
+        .filter((n) => n.id !== rootId)
+        .filter((n) => n.status !== TaskStatus.COMPLETED)
+        .filter((n) => (childrenByParent.get(n.id) ?? []).length > 0)
+        .filter((n) => allDescCompleted(n.id))
+        .sort((a, b) => depthOf(b.id) - depthOf(a.id));
+      if (ready.length === 0) {
+        return;
+      }
+      for (const n of ready) {
+        await this.repository.updateTaskStatus(n.id, {
+          status: TaskStatus.COMPLETED,
+        });
+        await this.taskRedis.setTaskStatus(n.id, 'completed');
+        await this.taskRedis.appendExecutionLog(n.id, {
+          step: 'coordinator_node_completed',
+          time: new Date().toISOString(),
+          meta: { source: 'coordinator_tree_compaction', rootId },
+        });
+      }
+    }
+  }
+
   /**
-   * 对主任务 id：依次通过 Role 执行未完成子任务；全部完成后将主任务标为 COMPLETED 并同步 Redis。
-   * 无子任务时：若主任务未完成，则直接走 Role 执行主任务。
+   * 对任意任务节点：按树形顺序推进其子树执行。
+   * - 根节点有子任务时视为协调节点，不直接执行自身；
+   * - 非根节点若未完成，先执行自身，再推进其子树；
+   * - 子树完成后将当前节点置为 COMPLETED（根节点兼容仅以子树完成判定）。
    */
   async runForParent(parentId: string): Promise<CoordinatorRunResult> {
-    const bundle = await this.repository.findParentWithChildren(parentId);
-    if (!bundle) {
+    const initial = await this.repository.findTaskWithChildren(parentId);
+    if (!initial) {
       throw new NotFoundException(`Parent task ${parentId} not found`);
     }
-
-    const { parent, children } = bundle;
-
-    /**
-     * PLAN_APPROVED：正常计划通过后跑子任务。
-     * COMPLETED：工作流已全部跑完；若之后又「追加子任务」，主任务仍为 COMPLETED，
-     * 但存在未完成的子任务，需要 Coordinator 继续跑——须允许进入，否则会 409。
-     */
+    const parent = initial.task;
     if (
       parent.status !== TaskStatus.PLAN_APPROVED &&
-      parent.status !== TaskStatus.COMPLETED
+      parent.status !== TaskStatus.COMPLETED &&
+      parent.status !== TaskStatus.PENDING &&
+      parent.status !== TaskStatus.FAILED &&
+      parent.status !== TaskStatus.WORKER_PAUSED
     ) {
       throw new ConflictException(
-        `须先通过计划审批（PLAN_APPROVED）后再运行 Coordinator（当前主任务状态=${parent.status}）。请依次：POST /workflow/generate/:id → POST /task/approve-plan/:id`,
+        `当前任务状态不允许进入协调执行（当前=${parent.status}）。请先完成计划审批或将任务置于可执行状态。`,
       );
     }
 
     const executedTaskIds: string[] = [];
-
-    if (children.length === 0) {
-      if (parent.status === TaskStatus.COMPLETED) {
-        return { parent, executedTaskIds };
-      }
-      // 无子任务时仅执行主任务本身（PLAN_APPROVED 且尚未拆子任务的场景）
-      const r = await this.roleService.executeTask(parent.id, {
-        chainFromCoordinator: true,
-      });
-      if (r.workerPaused) {
-        return { parent: r.task, executedTaskIds };
-      }
-      if (!r.pausedForApproval && !r.idempotent) {
-        executedTaskIds.push(parent.id);
-      }
-      const fresh = await this.repository.findParentWithChildren(parentId);
-      return { parent: fresh!.parent, executedTaskIds };
+    const firstTree = await this.repository.findSubtree(parentId);
+    if (!firstTree) {
+      throw new NotFoundException(`Parent task ${parentId} not found`);
     }
-
-    const maxSteps = children.length + 3;
+    const maxSteps = firstTree.nodes.length + 8;
     for (let i = 0; i < maxSteps; i++) {
-      const fresh = await this.repository.findParentWithChildren(parentId);
+      await this.completeReadyCoordinatorNodes(parentId);
+      const fresh = await this.repository.findSubtree(parentId);
       if (!fresh) {
         break;
       }
-      const next = getNextTask(
-        fresh.children.map((c) => ({
-          id: c.id,
-          status: c.status,
-          sortOrder: c.sortOrder,
+      const next = getNextTaskInTree(
+        parentId,
+        fresh.nodes.map((n) => ({
+          id: n.id,
+          parentId: n.parentId,
+          status: n.status,
+          sortOrder: n.sortOrder,
         })),
       );
       if (!next) {
@@ -101,17 +146,24 @@ export class CoordinatorService {
       }
     }
 
-    const finalBundle = await this.repository.findParentWithChildren(parentId);
-    if (!finalBundle) {
+    await this.completeReadyCoordinatorNodes(parentId);
+    const finalTree = await this.repository.findSubtree(parentId);
+    if (!finalTree) {
       throw new NotFoundException(`Parent task ${parentId} not found`);
     }
 
-    const allChildrenDone = finalBundle.children.every(
-      (c) => c.status === TaskStatus.COMPLETED,
+    const allChildrenDone = isSubtreeCompleted(
+      parentId,
+      finalTree.nodes.map((n) => ({
+        id: n.id,
+        parentId: n.parentId,
+        status: n.status,
+        sortOrder: n.sortOrder,
+      })),
     );
     if (
       allChildrenDone &&
-      finalBundle.parent.status !== TaskStatus.COMPLETED
+      finalTree.root.status !== TaskStatus.COMPLETED
     ) {
       const updatedParent = await this.repository.updateTaskStatus(parentId, {
         status: TaskStatus.COMPLETED,
@@ -124,6 +176,6 @@ export class CoordinatorService {
       return { parent: updatedParent, executedTaskIds };
     }
 
-    return { parent: finalBundle.parent, executedTaskIds };
+    return { parent: finalTree.root, executedTaskIds };
   }
 }

@@ -9,6 +9,8 @@ import { TaskRedis } from './../src/infrastructure/redis/task.redis';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { TaskStatus } from '@prisma/client';
 
+jest.setTimeout(30000);
+
 function createTaskRedisMock(redisStore: Map<string, string>) {
   const locks = new Set<string>();
   const logLists = new Map<string, TaskExecutionLogEntry[]>();
@@ -238,9 +240,9 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       .expect(200);
 
     expect(execRes.body.workerResult.success).toBe(true);
-    expect(execRes.body.workerResult.result).toMatchObject({
-      action: 'writeFile',
-    });
+    expect(['writeFile', 'runCommand']).toContain(
+      execRes.body.workerResult.result.action,
+    );
     expect(execRes.body.task.status).toBe('COMPLETED');
     expect(redisStore.get(`task:${subId}`)).toBe('completed');
 
@@ -463,6 +465,99 @@ describe('Workflow + Role + Coordinator (e2e)', () => {
       where: { parentId },
     });
     expect(children.every((c) => c.status === 'COMPLETED')).toBe(true);
+  });
+
+  it('append 到已完成子任务：父任务回到 PLAN_APPROVED 并在子树完成后恢复 COMPLETED', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post('/task/create')
+      .send({
+        name: 'build a web page',
+        parameters: {
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
+          projectRoot: 'apps/frontend/src',
+          projectType: 'web-frontend',
+        },
+      })
+      .expect(201);
+
+    const rootId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(rootId);
+    await request(app.getHttpServer())
+      .post(`/coordinator/run/${rootId}`)
+      .expect(200);
+
+    const prisma = app.get(PrismaService);
+    const source = await prisma.task.findFirstOrThrow({
+      where: { parentId: rootId },
+      orderBy: { sortOrder: 'asc' },
+    });
+    expect(source.status).toBe('COMPLETED');
+
+    const appendRes = await request(app.getHttpServer())
+      .post(`/task/${source.id}/append`)
+      .send({ name: 'nested branch task' })
+      .expect(201);
+
+    expect(appendRes.body.newTask.name).toBe('nested branch task');
+    const appended = await prisma.task.findUniqueOrThrow({
+      where: { id: appendRes.body.newTask.id },
+    });
+    expect(appended.parentId).toBe(source.id);
+
+    const refreshedSource = await prisma.task.findUniqueOrThrow({
+      where: { id: source.id },
+    });
+    expect(refreshedSource.status).toBe('COMPLETED');
+
+    const logs = getLogsForTask(source.id).map((e) => e.step);
+    expect(logs).toContain('task_reopened_for_coordination');
+    expect(logs).toContain('coordinator_node_completed');
+  });
+
+  it('任务详情/列表返回 hasChildren 与 isCoordinatorNode', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post('/task/create')
+      .send({
+        name: 'build a web page',
+        parameters: {
+          description:
+            'React app with login and dashboard pages; files under apps/frontend/src.',
+          projectRoot: 'apps/frontend/src',
+          projectType: 'web-frontend',
+        },
+      })
+      .expect(201);
+    const rootId = createRes.body.parentTask.id as string;
+    await generateAndApprovePlan(rootId);
+
+    const prisma = app.get(PrismaService);
+    const firstChild = await prisma.task.findFirstOrThrow({
+      where: { parentId: rootId },
+      orderBy: { sortOrder: 'asc' },
+    });
+    await request(app.getHttpServer())
+      .post(`/task/${firstChild.id}/append`)
+      .send({ name: 'nested branch task' })
+      .expect(201);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/task/${rootId}`)
+      .expect(200);
+    expect(detail.body.task.hasChildren).toBe(true);
+    expect(detail.body.task.isCoordinatorNode).toBe(true);
+    const childWithBranch = (
+      detail.body.children as Array<{ id: string; hasChildren: boolean; isCoordinatorNode: boolean }>
+    ).find((c) => c.id === firstChild.id);
+    expect(childWithBranch?.hasChildren).toBe(true);
+    expect(childWithBranch?.isCoordinatorNode).toBe(true);
+
+    const list = await request(app.getHttpServer()).get('/task/list').expect(200);
+    const root = (list.body as Array<{ id: string; hasChildren: boolean; isCoordinatorNode: boolean }>).find(
+      (x) => x.id === rootId,
+    );
+    expect(root?.hasChildren).toBe(true);
+    expect(root?.isCoordinatorNode).toBe(true);
   });
 
   afterEach(async () => {

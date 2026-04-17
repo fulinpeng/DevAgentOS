@@ -6,22 +6,47 @@ import { PrismaService } from '../../../prisma/prisma.service';
 export class CoordinatorRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** 仅接受顶层主任务（parentId 为空） */
-  async findParentWithChildren(parentId: string): Promise<{
-    parent: Task;
+  /** 任意节点及其直接子节点 */
+  async findTaskWithChildren(taskId: string): Promise<{
+    task: Task;
     children: Task[];
   } | null> {
-    const parent = await this.prisma.task.findUnique({
-      where: { id: parentId },
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
     });
-    if (!parent || parent.parentId !== null) {
+    if (!task) {
       return null;
     }
     const children = await this.prisma.task.findMany({
-      where: { parentId },
+      where: { parentId: taskId },
       orderBy: { sortOrder: 'asc' },
     });
-    return { parent, children };
+    return { task, children };
+  }
+
+  /** 子树快照（含根，BFS） */
+  async findSubtree(rootId: string): Promise<{
+    root: Task;
+    nodes: Task[];
+  } | null> {
+    const root = await this.prisma.task.findUnique({ where: { id: rootId } });
+    if (!root) {
+      return null;
+    }
+    const out: Task[] = [root];
+    let frontier: string[] = [rootId];
+    while (frontier.length > 0) {
+      const children = await this.prisma.task.findMany({
+        where: { parentId: { in: frontier } },
+        orderBy: [{ parentId: 'asc' }, { sortOrder: 'asc' }],
+      });
+      if (children.length === 0) {
+        break;
+      }
+      out.push(...children);
+      frontier = children.map((c) => c.id);
+    }
+    return { root, nodes: out };
   }
 
   async updateTaskStatus(

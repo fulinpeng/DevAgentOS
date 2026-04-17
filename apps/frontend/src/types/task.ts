@@ -6,6 +6,8 @@ export type RootTaskRow = {
   createdAt: string
   /** low | medium | high */
   riskLevel: string
+  hasChildren?: boolean
+  isCoordinatorNode?: boolean
 }
 
 export type TaskNode = {
@@ -24,6 +26,8 @@ export type TaskNode = {
   approvalReason?: string | null
   /** low | medium | high */
   riskLevel?: string
+  hasChildren?: boolean
+  isCoordinatorNode?: boolean
 }
 
 export type TaskDetailResponse = {
@@ -89,8 +93,8 @@ export type ExecuteRefinementResponse = {
 /** POST /task/:id/append — 新建子任务并执行 */
 export type AppendTaskResponse = {
   newTask: { id: string; name: string; status: string }
-  workerResult: { success: boolean; result: Record<string, unknown> }
-  idempotent?: boolean
-  pausedForApproval?: boolean
-  workerPaused?: boolean
+  coordinator?: {
+    parent: { id: string; status: string }
+    executedTaskIds: string[]
+  }
 }
