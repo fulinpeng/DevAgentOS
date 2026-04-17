@@ -14,6 +14,21 @@ export class RoleTaskRepository {
     return this.prisma.task.count({ where: { parentId } });
   }
 
+  async countIncompletePreviousSiblings(input: {
+    parentId: string;
+    sortOrder: number;
+    excludeTaskId: string;
+  }): Promise<number> {
+    return this.prisma.task.count({
+      where: {
+        parentId: input.parentId,
+        sortOrder: { lt: input.sortOrder },
+        id: { not: input.excludeTaskId },
+        status: { not: TaskStatus.COMPLETED },
+      },
+    });
+  }
+
   async updateTask(
     id: string,
     input: {

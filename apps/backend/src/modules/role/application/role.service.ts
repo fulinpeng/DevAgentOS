@@ -100,6 +100,18 @@ export class RoleService {
         );
       }
     }
+    if (task.parentId) {
+      const pendingPrev = await this.taskRepository.countIncompletePreviousSiblings({
+        parentId: task.parentId,
+        sortOrder: task.sortOrder,
+        excludeTaskId: task.id,
+      });
+      if (pendingPrev > 0) {
+        throw new ConflictException(
+          `当前任务前序同级任务尚未全部完成（remaining=${pendingPrev}），请先完成前置任务后再执行本任务`,
+        );
+      }
+    }
 
     const route = routeRoleExecution({ status: toStatusSnapshot(task.status) });
     if (route === 'blocked_plan') {
@@ -140,6 +152,19 @@ export class RoleService {
       const latest = await this.taskRepository.findById(taskId);
       if (!latest) {
         throw new NotFoundException(`Task ${taskId} not found`);
+      }
+      if (latest.parentId) {
+        const pendingPrev =
+          await this.taskRepository.countIncompletePreviousSiblings({
+            parentId: latest.parentId,
+            sortOrder: latest.sortOrder,
+            excludeTaskId: latest.id,
+          });
+        if (pendingPrev > 0) {
+          throw new ConflictException(
+            `当前任务前序同级任务尚未全部完成（remaining=${pendingPrev}），请先完成前置任务后再执行本任务`,
+          );
+        }
       }
       const r2 = routeRoleExecution({ status: toStatusSnapshot(latest.status) });
       if (r2 === 'blocked_approval') {

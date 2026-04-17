@@ -243,12 +243,16 @@ function TaskRow({
   depth,
   queueIndex,
   queueTotal,
+  busy,
+  onForceStatus,
 }: {
   t: TaskNode
   depth: number
   /** 子任务在串行队列中的序号（1-based），主任务不传 */
   queueIndex?: number
   queueTotal?: number
+  busy: boolean
+  onForceStatus: (task: TaskNode) => void
 }) {
   const rowBg =
     t.status === 'RUNNING' || t.status === 'WORKER_PAUSED'
@@ -284,6 +288,16 @@ function TaskRow({
       <td>{t.riskLevel ? <RiskBadge level={t.riskLevel} /> : '—'}</td>
       <td>
         <Link to={`/task/${t.id}`}>查看</Link>
+        {' · '}
+        <button
+          type="button"
+          className="btn"
+          style={{ fontSize: '0.8rem', padding: '2px 8px' }}
+          disabled={busy}
+          onClick={() => onForceStatus(t)}
+        >
+          扭转状态
+        </button>
       </td>
     </tr>
   )
@@ -308,6 +322,10 @@ export function TaskDetail() {
   const [editModalOpen, setEditModalOpen] = useState(false)
   const [appendModalOpen, setAppendModalOpen] = useState(false)
   const [configModalOpen, setConfigModalOpen] = useState(false)
+  const [forceStatusTask, setForceStatusTask] = useState<TaskNode | null>(null)
+  const [forceStatusValue, setForceStatusValue] = useState('PENDING')
+  const [forceStatusBusy, setForceStatusBusy] = useState(false)
+  const [forceStatusErr, setForceStatusErr] = useState<string | null>(null)
 
   const splitHintBanner =
     splitHintFromGenerate ?? splitHintFromNav ?? undefined
@@ -471,6 +489,23 @@ export function TaskDetail() {
     }
   }
 
+  async function forceUpdateTaskStatus() {
+    if (!forceStatusTask) return
+    setForceStatusBusy(true)
+    setForceStatusErr(null)
+    try {
+      await apiPatch(`/task/${forceStatusTask.id}/status`, {
+        status: forceStatusValue,
+      })
+      await reload()
+      setForceStatusTask(null)
+    } catch (e) {
+      setForceStatusErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setForceStatusBusy(false)
+    }
+  }
+
   /** 与微调执行同款：PENDING + 清 result + 去掉 workerResumeSteps，再 POST /role/execute */
   async function rerunFailedTask() {
     if (!id) return
@@ -557,6 +592,8 @@ export function TaskDetail() {
   const canAppend = canAppendChildTask(task, children)
   const canEdit = taskEditableBeforeRun(task.status)
   const canRerunFailed = canRerunFailedTask(task, isRoot, children.length)
+  const hasDirectChildren = children.length > 0
+  const canExecuteLeafNow = !isRoot && !hasDirectChildren && task.status === 'PENDING'
 
   return (
     <div>
@@ -805,6 +842,26 @@ export function TaskDetail() {
         </div>
       ) : null}
 
+      {canExecuteLeafNow ? (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h2>执行任务</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            当前任务为叶子执行节点，可直接启动 Role/Worker 执行。
+          </p>
+          {actionErr ? <p className="error">{actionErr}</p> : null}
+          <div className="btn-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void continueWorker()}
+            >
+              立即执行
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="panel">
         <h2>任务树</h2>
         {isRoot &&
@@ -909,6 +966,12 @@ export function TaskDetail() {
                 depth={depth}
                 queueIndex={i + 1}
                 queueTotal={orderedRows.length}
+                busy={busy}
+                onForceStatus={(row) => {
+                  setForceStatusErr(null)
+                  setForceStatusTask(row)
+                  setForceStatusValue(row.status)
+                }}
               />
             ))}
           </tbody>
@@ -964,6 +1027,85 @@ export function TaskDetail() {
         taskId={id}
         onReloadParent={reload}
       />
+
+      {forceStatusTask ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !forceStatusBusy) {
+              setForceStatusTask(null)
+            }
+          }}
+        >
+          <div
+            className="modal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="force-status-modal-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 520 }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'flex-start',
+                gap: 12,
+                marginBottom: 12,
+              }}
+            >
+              <h2 id="force-status-modal-title" style={{ margin: 0, fontSize: '1.15rem' }}>
+                强制扭转状态
+              </h2>
+              <button
+                type="button"
+                className="btn"
+                aria-label="关闭"
+                disabled={forceStatusBusy}
+                onClick={() => setForceStatusTask(null)}
+              >
+                关闭
+              </button>
+            </div>
+            <p className="muted" style={{ marginTop: 0 }}>
+              你正在修改任务状态：<strong>{forceStatusTask.name}</strong>（
+              <code>{forceStatusTask.id}</code>）。
+              该操作会直接覆盖当前状态，请确认这是你预期的人工干预动作。
+            </p>
+            <label className="form-field">
+              <span>目标状态</span>
+              <select
+                value={forceStatusValue}
+                disabled={forceStatusBusy}
+                onChange={(e) => setForceStatusValue(e.target.value)}
+              >
+                <option value="CREATED">CREATED</option>
+                <option value="PLAN_GENERATED">PLAN_GENERATED</option>
+                <option value="WAITING_PLAN_APPROVAL">WAITING_PLAN_APPROVAL</option>
+                <option value="PLAN_APPROVED">PLAN_APPROVED</option>
+                <option value="PENDING">PENDING</option>
+                <option value="WAITING_APPROVAL">WAITING_APPROVAL</option>
+                <option value="RUNNING">RUNNING</option>
+                <option value="WORKER_PAUSED">WORKER_PAUSED</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="FAILED">FAILED</option>
+              </select>
+            </label>
+            {forceStatusErr ? <p className="error">{forceStatusErr}</p> : null}
+            <div className="btn-row" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={forceStatusBusy || forceStatusValue === forceStatusTask.status}
+                onClick={() => void forceUpdateTaskStatus()}
+              >
+                {forceStatusBusy ? '提交中…' : '确认扭转'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <TaskConfigModal
         open={configModalOpen}

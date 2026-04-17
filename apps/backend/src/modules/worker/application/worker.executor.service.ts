@@ -960,6 +960,21 @@ export function sanitizeRepairStepsByPolicy(
         }
       }
     }
+    // 对同文件 unsafe_full_overwrite，允许修复触达受保护文件：
+    // 这是一次“安全覆盖约束”触发后的显式纠偏（readFile + writeFile overwriteExisting=true）。
+    if (
+      failure.tool === 'writeFile' &&
+      String(failure.error ?? '').includes('unsafe_full_overwrite')
+    ) {
+      const failedPath = normalizeRelPathForPolicy(failure.step.args.path);
+      if (failedPath) {
+        for (const p of touchesProtected) {
+          if (p === failedPath || p.endsWith(`/${failedPath}`)) {
+            allowedProtected.add(p);
+          }
+        }
+      }
+    }
     const blockedProtected = touchesProtected.filter(
       (p) => !allowedProtected.has(p),
     );

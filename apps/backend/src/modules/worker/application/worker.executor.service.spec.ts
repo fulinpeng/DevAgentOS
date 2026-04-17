@@ -207,6 +207,34 @@ describe('sanitizeRepairStepsByPolicy', () => {
     );
     expect(result.ok).toBe(true);
   });
+
+  it('allows protected file rewrite when failure is unsafe_full_overwrite on same path', () => {
+    const result = sanitizeRepairStepsByPolicy(
+      {
+        stepIndex: 4,
+        step: {
+          action: 'writeFile',
+          args: { path: 'src/app.tsx', content: 'new content' },
+        },
+        tool: 'writeFile',
+        error:
+          'unsafe_full_overwrite: 目标文件已存在。为避免整文件覆盖导致功能丢失，默认禁止直接 writeFile 覆盖；请先 readFile 后做最小改动，并显式传 overwriteExisting=true。',
+        data: {},
+      },
+      [
+        { action: 'readFile', args: { path: 'src/app.tsx' } },
+        {
+          action: 'writeFile',
+          args: {
+            path: 'src/app.tsx',
+            content: 'new content',
+            overwriteExisting: true,
+          },
+        },
+      ],
+    );
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe('findMissingPackageScriptForVerification', () => {
