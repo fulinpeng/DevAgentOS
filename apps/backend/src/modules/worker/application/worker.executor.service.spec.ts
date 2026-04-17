@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  assessRepairPolicyForTest,
   coerceWriteFileStepsForExistingTargets,
   dedupeConsecutiveIdenticalRunCommands,
   findMissingPackageScriptForVerification,
@@ -66,6 +67,34 @@ describe('sanitizeRepairStepsByPolicy', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('uses triplet policy assessment for protected-file rejection reason', () => {
+    const result = sanitizeRepairStepsByPolicy(
+      {
+        stepIndex: 0,
+        step: { action: 'runCommand', args: { command: 'pnpm run build' } },
+        tool: 'runCommand',
+        error: 'Command failed: pnpm run build\n',
+        data: { stderr: 'Killed\nOut of memory\n' },
+      },
+      [
+        {
+          action: 'writeFile',
+          args: {
+            path: 'tsconfig.json',
+            content: '{}',
+            overwriteExisting: true,
+          },
+        },
+      ],
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain('policy triplet');
+      expect(result.reason).toContain('intent=');
+      expect(result.reason).toContain('risk=');
+    }
+  });
+
   it('rejects touching protected tsconfig when build output is not compile-like', () => {
     const result = sanitizeRepairStepsByPolicy(
       {
@@ -96,7 +125,7 @@ describe('sanitizeRepairStepsByPolicy', () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.reason).toContain('protected files');
+      expect(result.reason).toContain('policy triplet');
       expect(result.reason).toContain('tsconfig.json');
       expect(result.reason).toContain('package.json');
     }
@@ -453,17 +482,77 @@ describe('repairPlanTouchesBusinessFilesForTest', () => {
 describe('repairPlanIsMeaningfulForValidationFailureForTest', () => {
   it('accepts test file writes for validation command failures', () => {
     expect(
-      repairPlanIsMeaningfulForValidationFailureForTest('pnpm run test', [
-        { action: 'writeFile', args: { path: 'src/App.test.tsx', content: 'x' } },
-      ]),
+      repairPlanIsMeaningfulForValidationFailureForTest(
+        'pnpm run test',
+        {
+          stepIndex: 0,
+          step: { action: 'runCommand', args: { command: 'pnpm run test' } },
+          tool: 'runCommand',
+          error: 'Command failed: pnpm run test\n',
+          data: { stderr: 'FAIL src/App.test.tsx\n' },
+        },
+        [
+          {
+            action: 'writeFile',
+            args: { path: 'src/App.test.tsx', content: 'x' },
+          },
+        ],
+      ),
     ).toBe(true);
   });
 
   it('rejects config-only writes for validation command failures', () => {
     expect(
-      repairPlanIsMeaningfulForValidationFailureForTest('pnpm run test', [
-        { action: 'writeFile', args: { path: 'vite.config.ts', content: 'x' } },
-      ]),
+      repairPlanIsMeaningfulForValidationFailureForTest(
+        'pnpm run test',
+        {
+          stepIndex: 0,
+          step: { action: 'runCommand', args: { command: 'pnpm run test' } },
+          tool: 'runCommand',
+          error: 'Command failed: pnpm run test\n',
+          data: { stderr: 'FAIL src/App.test.tsx\n' },
+        },
+        [{ action: 'writeFile', args: { path: 'vite.config.ts', content: 'x' } }],
+      ),
     ).toBe(false);
+  });
+
+  it('accepts environment config fix when validation failure is runtime env mismatch', () => {
+    expect(
+      repairPlanIsMeaningfulForValidationFailureForTest(
+        'pnpm run test',
+        {
+          stepIndex: 0,
+          step: { action: 'runCommand', args: { command: 'pnpm run test' } },
+          tool: 'runCommand',
+          error: 'Command failed: pnpm run test\n',
+          data: {
+            stderr:
+              'ReferenceError: localStorage is not defined at src/App.test.tsx:7:5',
+          },
+        },
+        [{ action: 'writeFile', args: { path: 'vite.config.ts', content: 'x' } }],
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('assessRepairPolicyForTest', () => {
+  it('classifies validation env mismatch as validation_fix intent', () => {
+    const assessment = assessRepairPolicyForTest(
+      {
+        stepIndex: 0,
+        step: { action: 'runCommand', args: { command: 'pnpm run test' } },
+        tool: 'runCommand',
+        error: 'Command failed: pnpm run test\n',
+        data: {
+          stderr:
+            'ReferenceError: localStorage is not defined at src/App.test.tsx:7:5',
+        },
+      },
+      [{ action: 'writeFile', args: { path: 'vite.config.ts', content: 'x' } }],
+    );
+    expect(assessment.intent).toBe('validation_fix');
+    expect(['low', 'medium', 'high']).toContain(assessment.risk);
   });
 });

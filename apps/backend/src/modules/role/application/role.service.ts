@@ -92,13 +92,11 @@ export class RoleService {
       throw new NotFoundException(`Task ${taskId} not found`);
     }
 
-    if (!task.parentId) {
-      const childCount = await this.taskRepository.countChildren(task.id);
-      if (childCount > 0) {
-        throw new ConflictException(
-          `含子任务的主任务请使用 POST /coordinator/run/${task.id} 执行，勿对主任务直接调用 Role`,
-        );
-      }
+    const childCount = await this.taskRepository.countChildren(task.id);
+    if (childCount > 0) {
+      throw new ConflictException(
+        `当前任务含子任务（count=${childCount}），请使用 POST /coordinator/run/${task.id} 推进子树，勿对协调节点直接调用 Role`,
+      );
     }
     if (task.parentId) {
       const pendingPrev = await this.taskRepository.countIncompletePreviousSiblings({
@@ -152,6 +150,12 @@ export class RoleService {
       const latest = await this.taskRepository.findById(taskId);
       if (!latest) {
         throw new NotFoundException(`Task ${taskId} not found`);
+      }
+      const latestChildCount = await this.taskRepository.countChildren(latest.id);
+      if (latestChildCount > 0) {
+        throw new ConflictException(
+          `当前任务含子任务（count=${latestChildCount}），请使用 POST /coordinator/run/${latest.id} 推进子树，勿对协调节点直接调用 Role`,
+        );
       }
       if (latest.parentId) {
         const pendingPrev =

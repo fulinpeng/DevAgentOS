@@ -738,22 +738,6 @@ function mentionsAnyPath(text: string, paths: readonly string[]): boolean {
   return paths.some((p) => t.includes(p.toLowerCase()));
 }
 
-function isTestConfigRelatedCompileFailure(text: string): boolean {
-  const t = text.toLowerCase().replace(/\\/g, '/');
-  return [
-    'vitest/config',
-    'src/__tests__/',
-    '.test.ts',
-    '.test.tsx',
-    '.spec.ts',
-    '.spec.tsx',
-    'setuptests.ts',
-    'enzyme',
-    '@testing-library',
-    'jest-dom',
-  ].some((needle) => t.includes(needle));
-}
-
 /** build / tsc / vite build 等「工程编译」类命令失败 */
 function isProjectBuildOrTypecheckCommandFailure(
   failure: RepairFailure,
@@ -771,40 +755,6 @@ function isProjectBuildOrTypecheckCommandFailure(
     /\btsc\b/.test(cmd) ||
     /\bpnpm\s+exec\s+tsc\b/.test(cmd) ||
     /\bnpx\s+tsc\b/.test(cmd)
-  );
-}
-
-function isMissingValidationScriptFailure(failure: RepairFailure): boolean {
-  if (failure.tool !== 'runCommand') {
-    return false;
-  }
-  const cmd = String(failure.step.args.command ?? '').toLowerCase();
-  const likelyValidationCmd =
-    cmd.includes(' run test') ||
-    cmd.includes(' run verify') ||
-    cmd.includes(' run check') ||
-    cmd.includes(' run e2e') ||
-    cmd.includes(' run vitest');
-  if (!likelyValidationCmd) {
-    return false;
-  }
-  const text = getRunCommandFailureText(failure).toLowerCase();
-  return (
-    text.includes('command "test" not found') ||
-    text.includes('command "verify" not found') ||
-    text.includes('command "check" not found') ||
-    text.includes('command "e2e" not found') ||
-    text.includes('command "vitest" not found') ||
-    text.includes('missing script: "test"') ||
-    text.includes("missing script: 'test'") ||
-    text.includes('missing script: "verify"') ||
-    text.includes("missing script: 'verify'") ||
-    text.includes('missing script: "check"') ||
-    text.includes("missing script: 'check'") ||
-    text.includes('missing script: "e2e"') ||
-    text.includes("missing script: 'e2e'") ||
-    text.includes('missing script: "vitest"') ||
-    text.includes("missing script: 'vitest'")
   );
 }
 
@@ -879,24 +829,230 @@ function repairPlanTouchesValidationFixFiles(fixSteps: WorkerLlmStep[]): boolean
   );
 }
 
+function isValidationRuntimeEnvironmentFailure(failure: RepairFailure): boolean {
+  if (failure.tool !== 'runCommand') {
+    return false;
+  }
+  const text = getRunCommandFailureText(failure).toLowerCase().replace(/\\/g, '/');
+  return (
+    (text.includes('referenceerror') &&
+      (text.includes('localstorage is not defined') ||
+        text.includes('window is not defined') ||
+        text.includes('document is not defined') ||
+        text.includes('navigator is not defined'))) ||
+    text.includes('test environment') ||
+    text.includes('jsdom') ||
+    text.includes('happy-dom')
+  );
+}
+
+function isValidationEnvironmentConfigPath(pathLike: unknown): boolean {
+  const p = normalizeRelPathForPolicy(pathLike);
+  if (!p) {
+    return false;
+  }
+  return (
+    p === 'vite.config.ts' ||
+    p === 'vitest.config.ts' ||
+    p === 'vitest.workspace.ts' ||
+    p === 'package.json' ||
+    p === 'src/setuptests.ts' ||
+    p.endsWith('/vitest.config.ts')
+  );
+}
+
+function repairPlanTouchesValidationEnvironmentConfig(
+  fixSteps: WorkerLlmStep[],
+): boolean {
+  return fixSteps.some(
+    (s) =>
+      normalizeAction(s.action) === 'writeFile' &&
+      isValidationEnvironmentConfigPath(s.args.path),
+  );
+}
+
 function repairPlanIsMeaningfulForValidationFailure(
   failedCommand: string,
+  failure: RepairFailure,
   fixSteps: WorkerLlmStep[],
 ): boolean {
   if (!isValidationCommand(failedCommand)) {
     return repairPlanTouchesBusinessFiles(fixSteps);
   }
+  const envMismatchFix =
+    isValidationRuntimeEnvironmentFailure(failure) &&
+    repairPlanTouchesValidationEnvironmentConfig(fixSteps);
   return (
     repairPlanTouchesBusinessFiles(fixSteps) ||
-    repairPlanTouchesValidationFixFiles(fixSteps)
+    repairPlanTouchesValidationFixFiles(fixSteps) ||
+    envMismatchFix
   );
 }
 
 export function repairPlanIsMeaningfulForValidationFailureForTest(
   failedCommand: string,
+  failure: RepairFailure,
   fixSteps: WorkerLlmStep[],
 ): boolean {
-  return repairPlanIsMeaningfulForValidationFailure(failedCommand, fixSteps);
+  return repairPlanIsMeaningfulForValidationFailure(
+    failedCommand,
+    failure,
+    fixSteps,
+  );
+}
+
+type RepairIntentTag =
+  | 'validation_fix'
+  | 'compile_config_fix'
+  | 'unsafe_overwrite_recovery'
+  | 'business_logic_fix'
+  | 'generic';
+
+type RepairRiskLevel = 'low' | 'medium' | 'high';
+
+type RepairPolicyAssessment = {
+  intent: RepairIntentTag;
+  risk: RepairRiskLevel;
+  evidencePaths: Set<string>;
+  allowedProtected: Set<string>;
+};
+
+function detectRepairIntent(
+  failure: RepairFailure,
+  fixSteps: WorkerLlmStep[],
+): RepairIntentTag {
+  if (
+    failure.tool === 'writeFile' &&
+    String(failure.error ?? '').includes('unsafe_full_overwrite')
+  ) {
+    return 'unsafe_overwrite_recovery';
+  }
+  if (failure.tool === 'runCommand') {
+    const failedCommand = String(failure.step.args.command ?? '').trim();
+    if (isValidationCommand(failedCommand)) {
+      return 'validation_fix';
+    }
+    if (
+      isProjectBuildOrTypecheckCommandFailure(failure) &&
+      looksLikeCompileOrTypeError(getRunCommandFailureText(failure))
+    ) {
+      return 'compile_config_fix';
+    }
+  }
+  if (repairPlanTouchesBusinessFiles(fixSteps)) {
+    return 'business_logic_fix';
+  }
+  return 'generic';
+}
+
+function collectEvidencePathsFromFailure(failure: RepairFailure): Set<string> {
+  const failureText = getRunCommandFailureText(failure);
+  const evidence = new Set<string>();
+  for (const candidate of REPAIR_PROTECTED_PATHS) {
+    if (mentionsAnyPath(failureText, [candidate])) {
+      evidence.add(candidate);
+    }
+  }
+  return evidence;
+}
+
+function failureSuggestsTestToolchainConfig(failure: RepairFailure): boolean {
+  const t = getRunCommandFailureText(failure).toLowerCase().replace(/\\/g, '/');
+  return [
+    'vitest/config',
+    'src/__tests__/',
+    '.test.ts',
+    '.test.tsx',
+    '.spec.ts',
+    '.spec.tsx',
+    'setuptests.ts',
+    '@testing-library',
+    'jest-dom',
+  ].some((needle) => t.includes(needle));
+}
+
+function evaluateRepairRisk(writeSet: Set<string>): RepairRiskLevel {
+  if (writeSet.size === 0) {
+    return 'low';
+  }
+  const touchesProtected = Array.from(writeSet).some((p) =>
+    REPAIR_PROTECTED_PATHS.some((root) => p === root || p.endsWith(`/${root}`)),
+  );
+  if (touchesProtected || writeSet.size > 2) {
+    return 'high';
+  }
+  return writeSet.size === 1 ? 'low' : 'medium';
+}
+
+function assessRepairPolicy(
+  failure: RepairFailure,
+  deduped: WorkerLlmStep[],
+): RepairPolicyAssessment {
+  const writeSet = new Set(
+    deduped
+      .filter((s) => normalizeAction(s.action) === 'writeFile')
+      .map((s) => normalizeRelPathForPolicy(s.args.path))
+      .filter(Boolean),
+  );
+  const intent = detectRepairIntent(failure, deduped);
+  const risk = evaluateRepairRisk(writeSet);
+  const evidencePaths = collectEvidencePathsFromFailure(failure);
+  const allowedProtected = new Set<string>();
+
+  // Intent stage: 基于修复意图给出可修改的“受保护文件”语义白名单
+  if (intent === 'validation_fix') {
+    for (const name of ['vite.config.ts', 'vitest.config.ts', 'package.json'] as const) {
+      allowedProtected.add(name);
+    }
+  }
+  if (intent === 'compile_config_fix') {
+    for (const name of [
+      'tsconfig.json',
+      'tsconfig.app.json',
+      'tsconfig.node.json',
+      'package.json',
+    ] as const) {
+      allowedProtected.add(name);
+    }
+    if (failureSuggestsTestToolchainConfig(failure)) {
+      allowedProtected.add('vite.config.ts');
+    }
+  }
+  if (intent === 'unsafe_overwrite_recovery') {
+    const failedPath = normalizeRelPathForPolicy(failure.step.args.path);
+    if (failedPath) {
+      allowedProtected.add(failedPath);
+    }
+  }
+
+  // Evidence stage: 失败文本明确提到的路径可放行
+  for (const pathFromError of evidencePaths) {
+    allowedProtected.add(pathFromError);
+  }
+
+  return { intent, risk, evidencePaths, allowedProtected };
+}
+
+export function assessRepairPolicyForTest(
+  failure: RepairFailure,
+  steps: WorkerLlmStep[],
+): { intent: RepairIntentTag; risk: RepairRiskLevel; evidencePaths: string[] } {
+  const unique = new Set<string>();
+  const deduped: WorkerLlmStep[] = [];
+  for (const s of steps) {
+    const key = `${normalizeAction(s.action)}:${JSON.stringify(s.args)}`;
+    if (unique.has(key)) {
+      continue;
+    }
+    unique.add(key);
+    deduped.push(s);
+  }
+  const assessment = assessRepairPolicy(failure, deduped);
+  return {
+    intent: assessment.intent,
+    risk: assessment.risk,
+    evidencePaths: Array.from(assessment.evidencePaths.values()).sort(),
+  };
 }
 
 function shouldSkipReplayingFailedStepAfterRepair(
@@ -973,63 +1129,25 @@ export function sanitizeRepairStepsByPolicy(
   }
 
   if (writeSet.size > 0) {
-    const failureText = getRunCommandFailureText(failure);
     const touchesProtected = Array.from(writeSet).filter((p) =>
       REPAIR_PROTECTED_PATHS.some((root) => p === root || p.endsWith(`/${root}`)),
     );
-    const allowedProtected = new Set<string>();
-    if (
-      isTestConfigRelatedCompileFailure(failureText) &&
-      touchesProtected.includes('vite.config.ts')
-    ) {
-      allowedProtected.add('vite.config.ts');
-    }
-    if (
-      isMissingValidationScriptFailure(failure) &&
-      touchesProtected.includes('package.json')
-    ) {
-      allowedProtected.add('package.json');
-    }
-    if (
-      isProjectBuildOrTypecheckCommandFailure(failure) &&
-      looksLikeCompileOrTypeError(failureText)
-    ) {
-      for (const name of [
-        'tsconfig.json',
-        'tsconfig.app.json',
-        'tsconfig.node.json',
-        'package.json',
-      ] as const) {
-        if (touchesProtected.includes(name)) {
-          allowedProtected.add(name);
+    const assessment = assessRepairPolicy(failure, deduped);
+    const blockedProtected = touchesProtected.filter((p) => {
+      if (assessment.allowedProtected.has(p)) {
+        return false;
+      }
+      for (const allow of assessment.allowedProtected) {
+        if (p.endsWith(`/${allow}`)) {
+          return false;
         }
       }
-    }
-    // 对同文件 unsafe_full_overwrite，允许修复触达受保护文件：
-    // 这是一次“安全覆盖约束”触发后的显式纠偏（readFile + writeFile overwriteExisting=true）。
-    if (
-      failure.tool === 'writeFile' &&
-      String(failure.error ?? '').includes('unsafe_full_overwrite')
-    ) {
-      const failedPath = normalizeRelPathForPolicy(failure.step.args.path);
-      if (failedPath) {
-        for (const p of touchesProtected) {
-          if (p === failedPath || p.endsWith(`/${failedPath}`)) {
-            allowedProtected.add(p);
-          }
-        }
-      }
-    }
-    const blockedProtected = touchesProtected.filter(
-      (p) => !allowedProtected.has(p),
-    );
-    if (
-      blockedProtected.length > 0 &&
-      !mentionsAnyPath(failureText, blockedProtected)
-    ) {
+      return true;
+    });
+    if (blockedProtected.length > 0) {
       return {
         ok: false,
-        reason: `repair touches protected files without direct error evidence: ${blockedProtected.join(', ')}`,
+        reason: `repair blocked by policy triplet: intent=${assessment.intent}; risk=${assessment.risk}; blocked=${blockedProtected.join(', ')}`,
       };
     }
   }
@@ -1865,6 +1983,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
         isValidationCommand(failedCommand) &&
         !repairPlanIsMeaningfulForValidationFailure(
           failedCommand,
+          effectiveRun.failure,
           plan.fixSteps,
         )
       ) {
