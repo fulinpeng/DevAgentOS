@@ -68,6 +68,45 @@ type StepExecutionOutcome =
       remainingSteps: WorkerLlmStep[];
     };
 
+/** fetch / LLM 网络错误写入 Redis：展开 Error.cause 链与 errno code，便于区分 DNS、reset、超时等 */
+function llmErrorMetaForRedis(e: unknown): Record<string, unknown> {
+  const message = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+  const meta: Record<string, unknown> = { message };
+  const chain: string[] = [];
+  const codes: string[] = [];
+  let cur: unknown = e;
+  let depth = 0;
+  while (cur instanceof Error && depth < 8) {
+    const n = cur as NodeJS.ErrnoException & { syscall?: string };
+    if (n.code) {
+      codes.push(String(n.code));
+    }
+    const bits = [
+      n.name || 'Error',
+      n.message ? n.message.slice(0, 400) : '',
+      n.code ? `code=${n.code}` : '',
+      typeof n.errno === 'number' ? `errno=${n.errno}` : '',
+      n.syscall ? `syscall=${n.syscall}` : '',
+    ].filter(Boolean);
+    if (bits.length) {
+      chain.push(bits.join(' | '));
+    }
+    cur = n.cause;
+    depth++;
+  }
+  if (cur != null && !(cur instanceof Error)) {
+    chain.push(`non-Error cause: ${String(cur).slice(0, 400)}`);
+  }
+  const uniq = [...new Set(codes)];
+  if (chain.length > 0) {
+    meta.causeChain = chain;
+  }
+  if (uniq.length > 0) {
+    meta.errnoCodes = uniq;
+  }
+  return meta;
+}
+
 /**
  * 解析 LLM 输出：优先 `steps[]`，否则兼容单条 `{ action, args }`。
  * Worker 请求侧已启用 `response_format: json_object`，单次补全应为唯一顶层对象，避免两段 JSON 拼接。
@@ -1090,7 +1129,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       await this.taskRedis.appendExecutionLog(task.id, {
         step: 'worker_llm_error',
         time: new Date().toISOString(),
-        meta: { message: msg.slice(0, 300) },
+        meta: llmErrorMetaForRedis(e),
       });
       return {
         success: false,
@@ -1167,7 +1206,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
         await this.taskRedis.appendExecutionLog(task.id, {
           step: 'worker_llm_acceptance_retry_error',
           time: new Date().toISOString(),
-          meta: { message: msg.slice(0, 300) },
+          meta: llmErrorMetaForRedis(e),
         });
       }
       if (retryRaw) {

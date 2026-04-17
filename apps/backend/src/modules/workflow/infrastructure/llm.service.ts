@@ -114,6 +114,7 @@ export class WorkflowLlmService {
         if (msg.includes('abort') || msg.includes('Abort')) {
           throw new Error(
             `LLM request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`,
+            { cause: e },
           );
         }
         throw e;
