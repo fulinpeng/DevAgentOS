@@ -245,6 +245,7 @@ function TaskRow({
   queueTotal,
   busy,
   onForceStatus,
+  currentTaskId,
 }: {
   t: TaskNode
   depth: number
@@ -253,6 +254,7 @@ function TaskRow({
   queueTotal?: number
   busy: boolean
   onForceStatus: (task: TaskNode) => void
+  currentTaskId: string
 }) {
   const rowBg =
     t.status === 'RUNNING' || t.status === 'WORKER_PAUSED'
@@ -287,7 +289,11 @@ function TaskRow({
       <td>{t.parameterSourceLabel ?? '—'}</td>
       <td>{t.riskLevel ? <RiskBadge level={t.riskLevel} /> : '—'}</td>
       <td>
-        <Link to={`/task/${t.id}`}>查看</Link>
+        {t.id === currentTaskId ? (
+          <span className="muted">当前任务</span>
+        ) : (
+          <Link to={`/task/${t.id}`}>查看</Link>
+        )}
         {' · '}
         <button
           type="button"
@@ -967,6 +973,7 @@ export function TaskDetail() {
                 queueIndex={i + 1}
                 queueTotal={orderedRows.length}
                 busy={busy}
+                currentTaskId={id}
                 onForceStatus={(row) => {
                   setForceStatusErr(null)
                   setForceStatusTask(row)

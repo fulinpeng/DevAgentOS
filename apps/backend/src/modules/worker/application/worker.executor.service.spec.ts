@@ -7,6 +7,7 @@ import {
   findMissingPackageScriptForVerification,
   fingerprintRepairWriteIntentsForTest,
   repairPlanTouchesBusinessFilesForTest,
+  repairPlanIsMeaningfulForValidationFailureForTest,
   sanitizeRepairStepsByPolicy,
   shouldSkipReplayingFailedStepAfterRepairForTest,
 } from './worker.executor.service';
@@ -444,6 +445,24 @@ describe('repairPlanTouchesBusinessFilesForTest', () => {
         { action: 'writeFile', args: { path: 'src/App.test.tsx', content: 'x' } },
         { action: 'writeFile', args: { path: 'src/setupTests.ts', content: 'x' } },
         { action: 'writeFile', args: { path: 'vitest.config.ts', content: 'x' } },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe('repairPlanIsMeaningfulForValidationFailureForTest', () => {
+  it('accepts test file writes for validation command failures', () => {
+    expect(
+      repairPlanIsMeaningfulForValidationFailureForTest('pnpm run test', [
+        { action: 'writeFile', args: { path: 'src/App.test.tsx', content: 'x' } },
+      ]),
+    ).toBe(true);
+  });
+
+  it('rejects config-only writes for validation command failures', () => {
+    expect(
+      repairPlanIsMeaningfulForValidationFailureForTest('pnpm run test', [
+        { action: 'writeFile', args: { path: 'vite.config.ts', content: 'x' } },
       ]),
     ).toBe(false);
   });

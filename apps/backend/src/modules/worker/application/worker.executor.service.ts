@@ -854,6 +854,51 @@ export function repairPlanTouchesBusinessFilesForTest(
   return repairPlanTouchesBusinessFiles(fixSteps);
 }
 
+function isValidationRelatedTestPath(pathLike: unknown): boolean {
+  const p = normalizeRelPathForPolicy(pathLike);
+  if (!p) {
+    return false;
+  }
+  if (p.includes('/__tests__/')) {
+    return true;
+  }
+  return (
+    p.endsWith('.test.ts') ||
+    p.endsWith('.test.tsx') ||
+    p.endsWith('.spec.ts') ||
+    p.endsWith('.spec.tsx') ||
+    p === 'src/setuptests.ts'
+  );
+}
+
+function repairPlanTouchesValidationFixFiles(fixSteps: WorkerLlmStep[]): boolean {
+  return fixSteps.some(
+    (s) =>
+      normalizeAction(s.action) === 'writeFile' &&
+      isValidationRelatedTestPath(s.args.path),
+  );
+}
+
+function repairPlanIsMeaningfulForValidationFailure(
+  failedCommand: string,
+  fixSteps: WorkerLlmStep[],
+): boolean {
+  if (!isValidationCommand(failedCommand)) {
+    return repairPlanTouchesBusinessFiles(fixSteps);
+  }
+  return (
+    repairPlanTouchesBusinessFiles(fixSteps) ||
+    repairPlanTouchesValidationFixFiles(fixSteps)
+  );
+}
+
+export function repairPlanIsMeaningfulForValidationFailureForTest(
+  failedCommand: string,
+  fixSteps: WorkerLlmStep[],
+): boolean {
+  return repairPlanIsMeaningfulForValidationFailure(failedCommand, fixSteps);
+}
+
 function shouldSkipReplayingFailedStepAfterRepair(
   failure: RepairFailure,
   remainingStep: WorkerLlmStep | undefined,
@@ -1818,7 +1863,10 @@ export class WorkerExecutorService implements IWorkerExecutor {
       if (
         effectiveRun.failure.tool === 'runCommand' &&
         isValidationCommand(failedCommand) &&
-        !repairPlanTouchesBusinessFiles(plan.fixSteps)
+        !repairPlanIsMeaningfulForValidationFailure(
+          failedCommand,
+          plan.fixSteps,
+        )
       ) {
         await this.taskRedis.appendExecutionLog(task.id, {
           step: 'repair_plan_rejected_no_business_change',
