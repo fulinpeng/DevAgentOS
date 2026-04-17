@@ -148,7 +148,7 @@ export function TaskAppendModal({
           </button>
         </div>
         <p className="muted" style={{ marginTop: 0, fontSize: '0.88rem' }}>
-          在当前工作流父节点下<strong>新建一条子任务</strong>并尝试执行。须已生成计划（根任务至少有一条子任务）。
+          在当前任务节点下<strong>新建一条子任务</strong>并触发协调执行。根任务场景须已生成计划（根任务至少有一条子任务）。
         </p>
         {err ? <p className="error">{err}</p> : null}
         <label className="form-field">

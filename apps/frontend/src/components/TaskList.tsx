@@ -210,11 +210,9 @@ export function TaskList() {
         <span className="muted"> · </span>
         <Link to="/pending-approval">待审批执行 →</Link>
       </nav>
-      <h2>任务列表（主任务）</h2>
+      <h2>任务列表（一级）</h2>
       <p className="muted" style={{ marginBottom: '0.75rem' }}>
-        本页只显示<strong>根任务</strong>（<code>parentId</code> 为空）。拆计划产生的
-        <strong>子任务</strong>不会单独占一行，请点进对应主任务的详情查看任务树。
-        <strong>已完成</strong>的任务可<strong>微调</strong>；追加任务可在详情页任务树下操作。
+        本页仅展示根任务（<code>parentId</code> 为空）。子任务请进入详情页的任务树查看。
       </p>
       <table className="data-table">
         <thead>
@@ -223,6 +221,7 @@ export function TaskList() {
             <th>状态</th>
             <th>风险</th>
             <th>子任务数</th>
+            <th>节点类型</th>
             <th>创建时间</th>
             <th>操作</th>
           </tr>
@@ -230,12 +229,11 @@ export function TaskList() {
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={6}>
-                <p style={{ margin: 0 }}>暂无主任务。</p>
+              <td colSpan={7}>
+                <p style={{ margin: 0 }}>暂无根任务。</p>
                 <p className="muted" style={{ margin: '0.5rem 0 0' }}>
-                  若你在数据库里能看到多条 <code>Task</code>，请确认其中有几条{' '}
-                  <code>parentId IS NULL</code>
-                  ——只有它们会出现在这里；其余是子任务。若根任务应为 0 条却仍显示异常，请核对前端{' '}
+                  若你在数据库里能看到多条 <code>Task</code>，请确认其中有{' '}
+                  <code>parentId IS NULL</code> 的记录；首页仅显示这一层。若根任务应有数据却为空，请核对前端{' '}
                   <code>VITE_API_BASE</code> 与后端是否为同一实例、是否指向同一份{' '}
                   <code>dev.db</code>。
                 </p>
@@ -248,8 +246,9 @@ export function TaskList() {
                 <td>
                   <code>{r.status}</code>
                 </td>
-                <td>{riskShort(r.riskLevel)}</td>
+                <td>{riskShort(r.riskLevel ?? 'low')}</td>
                 <td>{r.childCount}</td>
+                <td>{r.isCoordinatorNode ? '协调节点' : '执行节点'}</td>
                 <td>{new Date(r.createdAt).toLocaleString()}</td>
                 <td>
                   <Link to={`/task/${r.id}`}>详情</Link>
@@ -298,6 +297,9 @@ export function TaskList() {
           )}
         </tbody>
       </table>
+      <p className="muted" style={{ marginTop: '0.75rem', fontSize: '0.88rem' }}>
+        共 {rows.length} 个根任务。子任务请到详情页做追加与执行操作。
+      </p>
       <TaskConfigModal
         open={configTask !== null}
         task={configTask}

@@ -163,6 +163,50 @@ function shortTaskName(name: string, max = 20): string {
   return `${n.slice(0, max)}…`
 }
 
+type TreeViewItem = {
+  task: TaskNode
+  depth: number
+}
+
+async function loadTaskSubtree(rootId: string): Promise<TreeViewItem[]> {
+  const byId = new Map<string, TaskNode>()
+  const childrenByParent = new Map<string, TaskNode[]>()
+  const queue: string[] = [rootId]
+  const visited = new Set<string>()
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    if (visited.has(id)) {
+      continue
+    }
+    visited.add(id)
+    const detail = await apiGet<TaskDetailResponse>(`/task/${id}`)
+    byId.set(detail.task.id, detail.task)
+    childrenByParent.set(
+      id,
+      [...detail.children].sort((a, b) => a.sortOrder - b.sortOrder),
+    )
+    for (const c of detail.children) {
+      if (!visited.has(c.id)) {
+        queue.push(c.id)
+      }
+    }
+  }
+  const out: TreeViewItem[] = []
+  const walk = (id: string, depth: number) => {
+    const node = byId.get(id)
+    if (!node) {
+      return
+    }
+    out.push({ task: node, depth })
+    const children = childrenByParent.get(id) ?? []
+    for (const c of children) {
+      walk(c.id, depth + 1)
+    }
+  }
+  walk(rootId, 0)
+  return out
+}
+
 /** 仅 COMPLETED 可微调 */
 function canRefineTask(task: TaskNode): boolean {
   return task.status === 'COMPLETED'
@@ -222,7 +266,9 @@ function TaskRow({
         : '—'
   return (
     <tr style={{ background: rowBg }}>
+      <td>{queueIndex ?? '—'}</td>
       <td>{depth === 0 ? '—' : t.sortOrder}</td>
+      <td>{depth}</td>
       <td style={{ paddingLeft: `${8 + depth * 16}px` }} title={t.name}>
         {depth > 0 ? '└ ' : ''}
         {shortTaskName(t.name)}
@@ -254,6 +300,7 @@ export function TaskDetail() {
     string | null
   >(null)
   const [data, setData] = useState<TaskDetailResponse | null>(null)
+  const [treeRows, setTreeRows] = useState<TreeViewItem[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -267,7 +314,11 @@ export function TaskDetail() {
 
   const reload = useCallback(() => {
     if (!id) return Promise.resolve()
-    return apiGet<TaskDetailResponse>(`/task/${id}`).then(setData)
+    return apiGet<TaskDetailResponse>(`/task/${id}`).then(async (d) => {
+      setData(d)
+      const rows = await loadTaskSubtree(id)
+      setTreeRows(rows)
+    })
   }, [id])
 
   useEffect(() => {
@@ -282,8 +333,12 @@ export function TaskDetail() {
     let cancelled = false
     setErr(null)
     apiGet<TaskDetailResponse>(`/task/${id}`)
-      .then((d) => {
+      .then(async (d) => {
         if (!cancelled) setData(d)
+        const rows = await loadTaskSubtree(id)
+        if (!cancelled) {
+          setTreeRows(rows)
+        }
       })
       .catch((e: Error) => {
         if (!cancelled) setErr(e.message)
@@ -467,6 +522,11 @@ export function TaskDetail() {
   }
 
   const { task, children } = data
+  const orderedRows =
+    treeRows?.length && treeRows[0]?.task.id === task.id
+      ? treeRows
+      : [{ task, depth: 0 }, ...children.map((c) => ({ task: c, depth: 1 }))]
+  const childCount = orderedRows.length - 1
   const canGeneratePlan =
     isRoot &&
     task.status === 'CREATED' &&
@@ -755,7 +815,7 @@ export function TaskDetail() {
             {workflowTechStackFromParams.join(' · ')}
           </p>
         ) : null}
-        {isRoot && children.length > 0 ? (
+        {isRoot && childCount > 0 ? (
           <div
             className="muted"
             style={{
@@ -829,10 +889,12 @@ export function TaskDetail() {
         <table className="data-table">
           <thead>
             <tr>
+              <th>#</th>
               <th>顺序</th>
+              <th>层级</th>
               <th>名称</th>
               <th>状态</th>
-              <th>串行关系</th>
+              <th>执行关系</th>
               <th>角色</th>
               <th>来源</th>
               <th>风险</th>
@@ -840,14 +902,13 @@ export function TaskDetail() {
             </tr>
           </thead>
           <tbody>
-            <TaskRow t={task} depth={0} />
-            {children.map((c, i) => (
+            {orderedRows.map(({ task: rowTask, depth }, i) => (
               <TaskRow
-                key={c.id}
-                t={c}
-                depth={1}
+                key={rowTask.id}
+                t={rowTask}
+                depth={depth}
                 queueIndex={i + 1}
-                queueTotal={children.length}
+                queueTotal={orderedRows.length}
               />
             ))}
           </tbody>
