@@ -120,12 +120,51 @@ function llmErrorMetaForRedis(e: unknown): Record<string, unknown> {
  * 解析 LLM 输出：优先 `steps[]`，否则兼容单条 `{ action, args }`。
  * Worker 请求侧已启用 `response_format: json_object`，单次补全应为唯一顶层对象，避免两段 JSON 拼接。
  */
+function extractFirstTopLevelJsonObject(raw: string): string | null {
+  const start = raw.indexOf('{');
+  if (start < 0) {
+    return null;
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return raw.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
 function parseWorkerLlmOutput(text: string): WorkerLlmStep[] | null {
   const trimmed = text.trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fence ? fence[1].trim() : trimmed;
-  try {
-    const o = JSON.parse(raw) as unknown;
+  const parseOne = (s: string): WorkerLlmStep[] | null => {
+    const o = JSON.parse(s) as unknown;
     if (!o || typeof o !== 'object' || Array.isArray(o)) {
       return null;
     }
@@ -167,9 +206,28 @@ function parseWorkerLlmOutput(text: string): WorkerLlmStep[] | null {
     }
 
     return null;
+  };
+  try {
+    const first = parseOne(raw);
+    if (first) {
+      return first;
+    }
+  } catch {
+    // ignore and fallback
+  }
+  try {
+    const firstObject = extractFirstTopLevelJsonObject(raw);
+    if (!firstObject) {
+      return null;
+    }
+    return parseOne(firstObject);
   } catch {
     return null;
   }
+}
+
+export function parseWorkerLlmOutputForTest(text: string): WorkerLlmStep[] | null {
+  return parseWorkerLlmOutput(text);
 }
 
 function stepsContainOnlyNoop(steps: WorkerLlmStep[]): boolean {
@@ -460,6 +518,31 @@ function extractTaskContext(task: WorkerExecuteInput): {
     };
   }
   return { taskDescription: task.name, goal: task.name };
+}
+
+const PARENT_CONTEXT_HINT_REGEX =
+  /(父级|父任务|上级任务|parent task|parent|携带|获取|感知)/i;
+
+export function shouldInjectParentTaskContextForTest(
+  taskDescription: string,
+): boolean {
+  return PARENT_CONTEXT_HINT_REGEX.test(taskDescription);
+}
+
+function extractTaskDescriptionFromTaskRow(input: {
+  name: string;
+  parameters: unknown;
+}): string {
+  const p = input.parameters;
+  if (p !== null && typeof p === 'object' && !Array.isArray(p)) {
+    const r = p as Record<string, unknown>;
+    const td =
+      typeof r.taskDescription === 'string' ? r.taskDescription.trim() : '';
+    if (td) {
+      return td;
+    }
+  }
+  return input.name;
 }
 
 function extractRepairNarrative(
@@ -1177,6 +1260,56 @@ export class WorkerExecutorService implements IWorkerExecutor {
     private readonly repairEngine: RepairEngine,
   ) {}
 
+  private async maybeLoadParentTaskContext(
+    task: WorkerExecuteInput,
+    taskDescription: string,
+  ): Promise<
+    | {
+        parentTaskId: string;
+        parentTaskName: string;
+        parentTaskRole: string | null;
+        parentTaskDescription: string;
+      }
+    | undefined
+  > {
+    if (!task.parentId) {
+      return undefined;
+    }
+    if (!shouldInjectParentTaskContextForTest(taskDescription)) {
+      return undefined;
+    }
+    try {
+      const parent = await this.prisma.task.findUnique({
+        where: { id: task.parentId },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          parameters: true,
+        },
+      });
+      if (!parent) {
+        return undefined;
+      }
+      return {
+        parentTaskId: parent.id,
+        parentTaskName: parent.name,
+        parentTaskRole: parent.role,
+        parentTaskDescription: extractTaskDescriptionFromTaskRow({
+          name: parent.name,
+          parameters: parent.parameters,
+        }),
+      };
+    } catch (e) {
+      this.logger.warn(
+        `load parent task context failed taskId=${task.id}: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      return undefined;
+    }
+  }
+
   private async recoverMissingAcceptanceVerification(
     input: AcceptanceRecoveryInput,
   ): Promise<WorkerExecuteOutput | null> {
@@ -1303,6 +1436,10 @@ export class WorkerExecutorService implements IWorkerExecutor {
     }
 
     const { taskDescription, goal } = extractTaskContext(task);
+    const parentTaskContext = await this.maybeLoadParentTaskContext(
+      task,
+      taskDescription,
+    );
     const { workflowTechStack, taskTechStack } = extractTechStacks(task);
     const narrative = extractRepairNarrative(task);
     const deepFileTree = this.fileContext.getFileTree(baseDir);
@@ -1350,6 +1487,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       projectRoot,
       fileTreeDeep: deepFileTree,
       importantFiles,
+      ...(parentTaskContext ? { parentTaskContext } : {}),
     });
     let raw: string;
     try {
@@ -1996,7 +2134,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
             category: plan.category,
             failedCommand,
             hint:
-              '测试命令失败后，修复方案未修改 src/ 业务文件；请先修复报错指向的业务代码再重跑测试。',
+              '测试命令失败后，修复方案未通过 writeFile 修改 src/ 下业务源码、测试或测试相关配置；请根据报错堆栈补齐实质改动后再重跑测试。',
           },
         });
         history.push({

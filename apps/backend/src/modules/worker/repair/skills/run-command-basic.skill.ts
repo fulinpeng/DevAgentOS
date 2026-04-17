@@ -2,10 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { WorkerLlmStep } from '../../application/worker.executor.service';
 import type { RepairSkill } from '../repair-skill.interface';
 import type { FixPlan, RepairContext } from '../repair.types';
-import {
-  getRunCommandFailureText,
-  looksLikeCompileOrTypeError,
-} from '../run-command-failure-text';
+import { getRunCommandFailureText } from '../run-command-failure-text';
 
 function parseMissingScriptName(text: string): string | null {
   const m = text.match(/Command\s+"([^"]+)"\s+not\s+found/i);
@@ -23,10 +20,6 @@ function looksLikeDependencyMissing(errorText: string): boolean {
   );
 }
 
-function buildFixStepsForRunCommand(_ctx: RepairContext): WorkerLlmStep[] {
-  return [{ action: 'runCommand', args: { command: 'pnpm install' } }];
-}
-
 function isPackageManagerInstallCommand(command: string): boolean {
   const c = command.trim().toLowerCase();
   return (
@@ -39,54 +32,40 @@ function isPackageManagerInstallCommand(command: string): boolean {
   );
 }
 
+function buildFixStepsForRunCommand(): WorkerLlmStep[] {
+  return [{ action: 'runCommand', args: { command: 'pnpm install' } }];
+}
+
 @Injectable()
 export class RunCommandBasicRepairSkill implements RepairSkill {
   readonly id = 'run-command-basic';
 
-  match(context: RepairContext): { score: number; reason: string } {
+  async plan(context: RepairContext): Promise<FixPlan | null> {
     if (context.failure.tool !== 'runCommand') {
-      return { score: 0, reason: 'not runCommand failure' };
+      return null;
     }
-    const blob = getRunCommandFailureText(context.failure);
     const failedCommand = String(context.failure.step.args.command ?? '');
     if (isPackageManagerInstallCommand(failedCommand)) {
-      return {
-        score: 0,
-        reason: 'package manager install failed — avoid generic install loop',
-      };
+      return null;
     }
+    const blob = getRunCommandFailureText(context.failure);
     const missingScript = parseMissingScriptName(blob);
     if (missingScript) {
-      return { score: 0, reason: `missing script — avoid generic install retry: ${missingScript}` };
-    }
-    if (looksLikeCompileOrTypeError(blob)) {
-      return {
-        score: 0,
-        reason: 'compile/type error — use typescript-build skill',
-      };
+      return null;
     }
     const err = (context.failure.error ?? '').trim();
-    if (!err) {
-      return { score: 0.2, reason: 'runCommand failed without message' };
+    if (!err && !looksLikeDependencyMissing(blob)) {
+      return null;
     }
-    if (looksLikeDependencyMissing(err)) {
-      return { score: 0.95, reason: 'likely missing dependency/script/runtime' };
-    }
-    return { score: 0.4, reason: 'generic runCommand failure' };
-  }
-
-  async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
+    if (!looksLikeDependencyMissing(err) && !looksLikeDependencyMissing(blob)) {
       return null;
     }
     return {
       skillId: this.id,
-      score: m.score,
-      category: m.score >= 0.9 ? 'missing_dependency' : 'build_error',
-      reason: m.reason,
-      fixSteps: buildFixStepsForRunCommand(context),
+      score: 1,
+      category: 'missing_dependency',
+      reason: 'likely missing dependency/script/runtime — pnpm install',
+      fixSteps: buildFixStepsForRunCommand(),
     };
   }
 }
-

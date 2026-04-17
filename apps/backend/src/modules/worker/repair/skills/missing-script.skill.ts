@@ -46,37 +46,14 @@ function rewriteMissingScriptCommand(original: string, missingScript: string): s
 export class MissingScriptRepairSkill implements RepairSkill {
   readonly id = 'missing-script';
 
-  match(context: RepairContext): { score: number; reason: string } {
-    if (context.failure.tool !== 'runCommand') {
-      return { score: 0, reason: 'not runCommand failure' };
-    }
-    const missing = extractMissingScriptNameFromRunCommandFailure(
-      context.failure,
-    );
-    if (!missing) {
-      return { score: 0, reason: 'not missing script error' };
-    }
-    if (isValidationScript(missing)) {
-      return {
-        score: 0,
-        reason: `missing validation script: ${missing} — use llm fallback`,
-      };
-    }
-    return { score: 0.99, reason: `missing script: ${missing}` };
-  }
-
   async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
+    if (context.failure.tool !== 'runCommand') {
       return null;
     }
     const missing = extractMissingScriptNameFromRunCommandFailure(
       context.failure,
     );
-    if (!missing) {
-      return null;
-    }
-    if (isValidationScript(missing)) {
+    if (!missing || isValidationScript(missing)) {
       return null;
     }
     const command = String(context.failure.step.args.command ?? '');
@@ -87,11 +64,10 @@ export class MissingScriptRepairSkill implements RepairSkill {
     ];
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'missing_script',
-      reason: m.reason,
+      reason: `missing script: ${missing}`,
       fixSteps,
     };
   }
 }
-

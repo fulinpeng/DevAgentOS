@@ -20,28 +20,19 @@ function parseMissingPathFromEnoent(errorText: string): string | null {
 export class ReadFileEnoentRepairSkill implements RepairSkill {
   readonly id = 'readfile-enoent';
 
-  match(context: RepairContext): { score: number; reason: string } {
+  async plan(context: RepairContext): Promise<FixPlan | null> {
     if (context.failure.tool !== 'readFile') {
-      return { score: 0, reason: 'not readFile failure' };
+      return null;
     }
     const err = String(context.failure.error ?? '');
     if (!/ENOENT/i.test(err)) {
-      return { score: 0, reason: 'not ENOENT' };
-    }
-    const stepPath = String(context.failure.step.args.path ?? '').trim();
-    if (!stepPath) {
-      return { score: 0, reason: 'missing readFile path' };
-    }
-    return { score: 0.97, reason: `missing file for readFile: ${stepPath}` };
-  }
-
-  async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
       return null;
     }
     const stepPath = String(context.failure.step.args.path ?? '').trim();
-    const parsed = parseMissingPathFromEnoent(String(context.failure.error ?? ''));
+    if (!stepPath) {
+      return null;
+    }
+    const parsed = parseMissingPathFromEnoent(err);
     const path = stepPath || parsed;
     if (!path) {
       return null;
@@ -62,9 +53,9 @@ export class ReadFileEnoentRepairSkill implements RepairSkill {
     ];
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'path_error',
-      reason: m.reason,
+      reason: `missing file for readFile: ${path}`,
       fixSteps,
     };
   }

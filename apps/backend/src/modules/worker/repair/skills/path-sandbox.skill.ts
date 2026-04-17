@@ -35,17 +35,9 @@ function maybeRewritePathStep(step: WorkerLlmStep): WorkerLlmStep | null {
 export class PathSandboxRepairSkill implements RepairSkill {
   readonly id = 'path-sandbox';
 
-  match(context: RepairContext): { score: number; reason: string } {
-    const err = (context.failure.error ?? '').toLowerCase();
-    if (err.includes('path escapes sandbox')) {
-      return { score: 0.98, reason: 'path escapes sandbox' };
-    }
-    return { score: 0, reason: 'not path sandbox issue' };
-  }
-
   async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
+    const err = (context.failure.error ?? '').toLowerCase();
+    if (!err.includes('path escapes sandbox')) {
       return null;
     }
     const rewritten = maybeRewritePathStep(context.failure.step);
@@ -54,11 +46,10 @@ export class PathSandboxRepairSkill implements RepairSkill {
     }
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'path_error',
       reason: 'sanitize relative path to stay inside projectRoot',
       fixSteps: [rewritten],
     };
   }
 }
-

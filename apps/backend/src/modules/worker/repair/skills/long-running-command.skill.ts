@@ -30,20 +30,12 @@ function rewriteLongRunningCommand(command: string): string | null {
 export class LongRunningCommandRepairSkill implements RepairSkill {
   readonly id = 'long-running-command';
 
-  match(context: RepairContext): { score: number; reason: string } {
+  async plan(context: RepairContext): Promise<FixPlan | null> {
     if (context.failure.tool !== 'runCommand') {
-      return { score: 0, reason: 'not runCommand failure' };
+      return null;
     }
     const err = (context.failure.error ?? '').toLowerCase();
-    if (err.includes('run_command_long_running')) {
-      return { score: 1, reason: 'blocked long running command' };
-    }
-    return { score: 0, reason: 'not long running related' };
-  }
-
-  async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
+    if (!err.includes('run_command_long_running')) {
       return null;
     }
     const cmd = String(context.failure.step.args.command ?? '');
@@ -56,11 +48,10 @@ export class LongRunningCommandRepairSkill implements RepairSkill {
     ];
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'command_error',
       reason: `rewrite long running command: ${cmd} -> ${rewritten}`,
       fixSteps,
     };
   }
 }
-

@@ -76,6 +76,15 @@ export function buildRepairSkillUserPrompt(context: RepairContext): string {
     '# Repair history（本轮已尝试的修复技能）',
     JSON.stringify(context.history, null, 2),
     '',
+    context.triage
+      ? [
+          '# Repair triage（路由 LLM 结论，生成 fixSteps 时请优先对齐）',
+          `skillId: ${context.triage.skillId}`,
+          `rationale: ${context.triage.rationale}`,
+          `focusPaths: ${JSON.stringify(context.triage.focusPaths)}`,
+          '',
+        ].join('\n')
+      : '',
     '仅返回 JSON：{"fixSteps":[{"action":"...","args":{...}}]}',
   ].join('\n');
 }

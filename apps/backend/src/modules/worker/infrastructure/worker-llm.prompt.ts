@@ -66,6 +66,13 @@ export type BuildWorkerUserContentInput = {
   fileTreeDeep: string[];
   /** 关键文件路径 -> 内容片段 */
   importantFiles: Record<string, string>;
+  /** 可选：父任务上下文（当子任务描述明确要求感知父任务时注入） */
+  parentTaskContext?: {
+    parentTaskId: string;
+    parentTaskName: string;
+    parentTaskRole: string | null;
+    parentTaskDescription: string;
+  };
 };
 
 /** 控制 User 消息总长，避免超出模型上下文 */
@@ -141,6 +148,19 @@ export function buildWorkerUserContent(
         ]
       : [];
 
+  const parentTaskBlock = input.parentTaskContext
+    ? [
+        '# 父级任务上下文（按当前子任务要求注入）',
+        `- parentTaskId: ${input.parentTaskContext.parentTaskId}`,
+        `- 父任务名称: ${input.parentTaskContext.parentTaskName}`,
+        `- 父任务角色: ${input.parentTaskContext.parentTaskRole ?? '（未指定）'}`,
+        '- 父任务描述：',
+        input.parentTaskContext.parentTaskDescription ||
+          '（父任务未提供详细描述）',
+        '',
+      ]
+    : [];
+
   const body = [
     '# 当前任务',
     `- taskId: ${input.taskId}`,
@@ -153,6 +173,7 @@ export function buildWorkerUserContent(
     '# 任务说明',
     input.taskDescription || '（未单独提供，见名称）',
     '',
+    ...parentTaskBlock,
     '# 项目目标',
     input.goal || input.taskName,
     '',

@@ -77,10 +77,30 @@ export function extractMissingScriptNameFromRunCommandFailure(
   return null;
 }
 
+/**
+ * Vitest + Testing Library 等「运行时找不到元素 / 断言」类失败。
+ * 与 tsc / Vite 编译错误区分，避免误走 typescript-build 提示词。
+ * 若同一段输出已含 TS 错误行，仍视为编译问题（由 looksLikeCompileOrTypeError 处理）。
+ */
+export function looksLikeTestAssertionFailure(text: string): boolean {
+  const t = text;
+  if (!t.trim()) return false;
+  if (/error\s+TS\d{3,5}/i.test(t)) return false;
+  if (/\(\d+,\d+\):\s*error\s+TS/i.test(t)) return false;
+  if (/testinglibraryelementerror/i.test(t)) return true;
+  if (/unable to find an element/i.test(t)) return true;
+  if (/unable to find role/i.test(t)) return true;
+  if (/found multiple elements/i.test(t)) return true;
+  if (/testing-library\/dom/i.test(t) && /getelementerror/i.test(t)) return true;
+  if (/\bassertionerror\b/i.test(t) && /expect\(/i.test(t)) return true;
+  return false;
+}
+
 /** 判断是否为 tsc / Vite build / TypeScript 等编译期报错（而非缺依赖、脚本缺失） */
 export function looksLikeCompileOrTypeError(text: string): boolean {
   const t = text;
   if (!t.trim()) return false;
+  if (looksLikeTestAssertionFailure(t)) return false;
   if (/error\s+TS\d{3,5}/i.test(t)) return true;
   if (/\(\d+,\d+\):\s*error\s+TS/i.test(t)) return true;
   if (/is declared but its value is never read/i.test(t)) return true;
@@ -109,9 +129,26 @@ export function looksLikeCompileOrTypeError(text: string): boolean {
   // Vitest + @testing-library/jest-dom：未 setup 时 Chai 不认识 toBeInTheDocument 等 matcher
   if (/invalid chai property/i.test(t)) return true;
   if (/tobeinthedocument/i.test(t)) return true;
-  if (/failed tests\s+\d+/i.test(t)) return true;
-  if (/\bassertionerror\b/i.test(t)) return true;
-  if (/@testing-library\//i.test(t) && /\b(fail|error)\b/i.test(t)) {
+  return false;
+}
+
+/**
+ * Vitest 已执行用例但失败（含 Testing Library / 断言），且同一段输出中**无** TS 编译行。
+ * 用于在 LLM triage 误判为 typescript-build 时纠偏到 vitest-rtl-assertion。
+ */
+export function looksLikeVitestDomOrAssertionFailure(text: string): boolean {
+  const t = text;
+  if (!t.trim()) return false;
+  if (/error\s+TS\d{3,5}/i.test(t)) return false;
+  if (/\(\d+,\d+\):\s*error\s+TS/i.test(t)) return false;
+  if (looksLikeTestAssertionFailure(t)) return true;
+  if (
+    /failed tests\s+\d+/i.test(t) &&
+    /\bfail\s+src\/[^\s]+\.test\.(tsx?|jsx?)/i.test(t)
+  ) {
+    return true;
+  }
+  if (/failed tests\s+\d+/i.test(t) && /testinglibrary/i.test(t)) {
     return true;
   }
   return false;

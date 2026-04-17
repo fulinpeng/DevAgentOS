@@ -8,6 +8,7 @@ export type RepairCategory =
   | 'compile_error'
   | 'command_error'
   | 'build_error'
+  | 'test_assertion'
   | 'unknown';
 
 export type RepairFailure = {
@@ -45,6 +46,13 @@ export type RepairWorkflowOutline = {
   }>;
 };
 
+/** LLM 分类结果：选定修复技能与建议关注路径 */
+export type RepairTriage = {
+  skillId: string;
+  focusPaths: string[];
+  rationale: string;
+};
+
 export type RepairContext = {
   taskId: string;
   projectRoot: string;
@@ -71,6 +79,8 @@ export type RepairContext = {
     success: boolean;
     error?: string;
   }>;
+  /** 由 RepairEngine 注入：分类 LLM 输出，供各技能 plan 参考 */
+  triage?: RepairTriage;
 };
 
 export type FixPlan = {

@@ -70,16 +70,8 @@ export class MissingAcceptanceVerifyRepairSkill implements RepairSkill {
 
   constructor(private readonly llm: WorkflowLlmService) {}
 
-  match(context: RepairContext): { score: number; reason: string } {
-    if (context.failure.error !== 'worker_llm_missing_acceptance_verify') {
-      return { score: 0, reason: 'not acceptance verification planning failure' };
-    }
-    return { score: 0.99, reason: 'worker plan missing acceptance verification' };
-  }
-
   async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
+    if (context.failure.error !== 'worker_llm_missing_acceptance_verify') {
       return null;
     }
     const raw = await this.llm.callLLM(
@@ -92,9 +84,9 @@ export class MissingAcceptanceVerifyRepairSkill implements RepairSkill {
     }
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'build_error',
-      reason: m.reason,
+      reason: 'worker plan missing acceptance verification',
       fixSteps,
     };
   }

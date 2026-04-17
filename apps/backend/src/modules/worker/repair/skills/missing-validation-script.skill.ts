@@ -114,51 +114,43 @@ export class MissingValidationScriptRepairSkill implements RepairSkill {
 
   constructor(private readonly llm: WorkflowLlmService) {}
 
-  match(context: RepairContext): { score: number; reason: string } {
+  async plan(context: RepairContext): Promise<FixPlan | null> {
     if (context.failure.tool !== 'runCommand') {
-      return { score: 0, reason: 'not runCommand failure' };
+      return null;
     }
     const missing = extractMissingScriptNameFromRunCommandFailure(
       context.failure,
     );
     if (!missing || !isValidationScript(missing)) {
-      return { score: 0, reason: 'not missing validation script error' };
-    }
-    return { score: 0.97, reason: `missing validation script: ${missing}` };
-  }
-
-  async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
       return null;
     }
-    const missing = extractMissingScriptNameFromRunCommandFailure(context.failure);
+    const reason = `missing validation script: ${missing}`;
     const pkg = readPackageJsonMeta(context.projectRoot);
     if (missing?.toLowerCase() === 'test') {
       if (pkg.scripts.verify) {
         return {
           skillId: this.id,
-          score: m.score,
+          score: 1,
           category: 'missing_script',
-          reason: `${m.reason}; fallback to existing verify script`,
+          reason: `${reason}; fallback to existing verify script`,
           fixSteps: [{ action: 'runCommand', args: { command: 'pnpm run verify' } }],
         };
       }
       if (pkg.scripts.check) {
         return {
           skillId: this.id,
-          score: m.score,
+          score: 1,
           category: 'missing_script',
-          reason: `${m.reason}; fallback to existing check script`,
+          reason: `${reason}; fallback to existing check script`,
           fixSteps: [{ action: 'runCommand', args: { command: 'pnpm run check' } }],
         };
       }
       if (pkg.hasVitest) {
         return {
           skillId: this.id,
-          score: m.score,
+          score: 1,
           category: 'missing_script',
-          reason: `${m.reason}; fallback to pnpm exec vitest run`,
+          reason: `${reason}; fallback to pnpm exec vitest run`,
           fixSteps: [{ action: 'runCommand', args: { command: 'pnpm exec vitest run' } }],
         };
       }
@@ -174,9 +166,9 @@ export class MissingValidationScriptRepairSkill implements RepairSkill {
     }
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'missing_script',
-      reason: m.reason,
+      reason,
       fixSteps,
     };
   }

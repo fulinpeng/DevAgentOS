@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { getRunCommandFailureText, looksLikeCompileOrTypeError } from '../run-command-failure-text';
 import { MissingScriptRepairSkill } from './missing-script.skill';
 import { MissingValidationScriptRepairSkill } from './missing-validation-script.skill';
 import { LongRunningCommandRepairSkill } from './long-running-command.skill';
@@ -9,7 +8,6 @@ import { MissingAcceptanceVerifyRepairSkill } from './missing-acceptance-verify.
 import { PathSandboxRepairSkill } from './path-sandbox.skill';
 import { ReadFileEnoentRepairSkill } from './readfile-enoent.skill';
 import { RunCommandBasicRepairSkill } from './run-command-basic.skill';
-import { TypeScriptBuildRepairSkill } from './typescript-build.skill';
 import { UnsafeFullOverwriteRepairSkill } from './unsafe-full-overwrite.skill';
 
 /** 仅占位：真实运行时 narrative 由 WorkerExecutor 从任务 parameters 注入，与具体业务无关 */
@@ -119,65 +117,8 @@ describe('repair skills', () => {
     ]);
   });
 
-  it('looksLikeCompileOrTypeError detects never[] / implicit any messages', () => {
-    expect(
-      looksLikeCompileOrTypeError(
-        "src/pages/Home.tsx(16,15): error TS2345: Argument of type 'Foo[]' is not assignable to parameter of type 'SetStateAction<never[]>'.",
-      ),
-    ).toBe(true);
-    expect(
-      looksLikeCompileOrTypeError(
-        "src/pages/Home.tsx(19,25): error TS7006: Parameter 'e' implicitly has an 'any' type.",
-      ),
-    ).toBe(true);
-  });
-
-  it('looksLikeCompileOrTypeError detects tsc output', () => {
-    expect(
-      looksLikeCompileOrTypeError(
-        "src/App.tsx(5,1): error TS6133: 'SearchBar' is declared but its value is never read.",
-      ),
-    ).toBe(true);
-    expect(
-      looksLikeCompileOrTypeError(
-        "src/App.tsx(2,18): error TS2307: Cannot find module './pages/Home'",
-      ),
-    ).toBe(true);
-    expect(getRunCommandFailureText({ stepIndex: 0, step: { action: 'runCommand', args: {} }, tool: 'runCommand', error: 'Command failed', data: { stderr: 'error TS1484:' } }).includes('TS1484')).toBe(true);
-  });
-
-  it('looksLikeCompileOrTypeError detects vite import-analysis resolution errors', () => {
-    expect(
-      looksLikeCompileOrTypeError(
-        'Error: Failed to resolve import "./App" from "src/App.test.tsx". Does the file exist? Plugin: vite:import-analysis',
-      ),
-    ).toBe(true);
-  });
-
-  it('looksLikeCompileOrTypeError detects vitest + jest-dom matcher setup errors', () => {
-    expect(
-      looksLikeCompileOrTypeError(
-        "FAIL src/App.test.tsx > App routing > renders\nError: Invalid Chai property: toBeInTheDocument",
-      ),
-    ).toBe(true);
-  });
-
-  it('run-command-basic skill defers compile failures (does not suggest pnpm install)', async () => {
+  it('run-command-basic does not suggest pnpm install for TS-only compile output', async () => {
     const skill = new RunCommandBasicRepairSkill();
-    const m = skill.match({
-      ...baseContext,
-      failure: {
-        stepIndex: 0,
-        step: { action: 'runCommand', args: { command: 'pnpm run build' } },
-        tool: 'runCommand',
-        error: 'Command failed: pnpm run build\n',
-        data: {
-          stderr:
-            "src/App.tsx(5,1): error TS6133: 'SearchBar' is declared but its value is never read.\n",
-        },
-      },
-    });
-    expect(m.score).toBe(0);
     const plan = await skill.plan({
       ...baseContext,
       failure: {
@@ -194,7 +135,7 @@ describe('repair skills', () => {
     expect(plan).toBeNull();
   });
 
-  it('run-command-basic defers vitest jest-dom matcher errors (no pnpm install)', async () => {
+  it('run-command-basic does not suggest pnpm install for jest-dom matcher errors', async () => {
     const skill = new RunCommandBasicRepairSkill();
     const failure = {
       stepIndex: 0,
@@ -206,26 +147,22 @@ describe('repair skills', () => {
           "FAIL src/App.test.tsx > x\nError: Invalid Chai property: toBeInTheDocument\n",
       },
     };
-    expect(skill.match({ ...baseContext, failure }).score).toBe(0);
     expect(await skill.plan({ ...baseContext, failure })).toBeNull();
   });
 
-  it('typescript-build skill matches runCommand with stderr TS errors', () => {
-    const skill = new TypeScriptBuildRepairSkill(null as never);
-    const m = skill.match({
-      ...baseContext,
-      failure: {
-        stepIndex: 0,
-        step: { action: 'runCommand', args: { command: 'pnpm run build' } },
-        tool: 'runCommand',
-        error: 'Command failed: pnpm run build\n',
-        data: {
-          stderr:
-            "src/router/index.tsx(12,15): error TS2739: Type '{}' is missing the following properties from type 'DetailPageProps': imageUrl, title, description\n",
-        },
+  it('run-command-basic does not suggest pnpm install for describe/localStorage ReferenceError', async () => {
+    const skill = new RunCommandBasicRepairSkill();
+    const failure = {
+      stepIndex: 0,
+      step: { action: 'runCommand', args: { command: 'pnpm run test' } },
+      tool: 'runCommand',
+      error: 'Command failed: pnpm run test\n',
+      data: {
+        stderr:
+          'FAIL src/App.test.tsx\nReferenceError: describe is not defined\nReferenceError: localStorage is not defined\n',
       },
-    });
-    expect(m.score).toBeGreaterThan(0.8);
+    };
+    expect(await skill.plan({ ...baseContext, failure })).toBeNull();
   });
 
   it('run-command-basic skill suggests pnpm install for missing deps', async () => {
@@ -261,7 +198,6 @@ describe('repair skills', () => {
         stderr: 'ERR_PNPM_NO_MATCHING_VERSION No matching version found\n',
       },
     };
-    expect(skill.match({ ...baseContext, failure }).score).toBe(0);
     expect(await skill.plan({ ...baseContext, failure })).toBeNull();
   });
 
@@ -293,34 +229,35 @@ describe('repair skills', () => {
           'ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "test" not found\n',
       },
     };
-    expect(missingScript.match({ ...baseContext, failure }).score).toBe(0);
     expect(await missingScript.plan({ ...baseContext, failure })).toBeNull();
-    expect(basic.match({ ...baseContext, failure }).score).toBe(0);
     expect(await basic.plan({ ...baseContext, failure })).toBeNull();
   });
 
-  it('missing-validation-script skill matches absent test script', () => {
-    const skill = new MissingValidationScriptRepairSkill(null as never);
-    const m = skill.match({
-      ...baseContext,
-      failure: {
-        stepIndex: 0,
-        step: { action: 'runCommand', args: { command: 'pnpm run test' } },
-        tool: 'runCommand',
-        error: 'Command failed: pnpm run test\n',
-        data: {
-          stderr:
-            'ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "test" not found\n',
-        },
+  it('missing-validation-script plans via LLM when no local shortcut applies', async () => {
+    const skill = new MissingValidationScriptRepairSkill({
+      callLLM: async () =>
+        '{"fixSteps":[{"action":"runCommand","args":{"command":"pnpm exec vitest run"}}]}',
+    } as never);
+    const failure = {
+      stepIndex: 0,
+      step: { action: 'runCommand', args: { command: 'pnpm run test' } },
+      tool: 'runCommand',
+      error: 'Command failed: pnpm run test\n',
+      data: {
+        stderr:
+          'ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "test" not found\n',
       },
-    });
-    expect(m.score).toBeGreaterThan(0.9);
-    expect(m.reason).toContain('missing validation script');
+    };
+    const plan = await skill.plan({ ...baseContext, failure });
+    expect(plan?.fixSteps?.[0]?.args?.command).toBe('pnpm exec vitest run');
   });
 
-  it('missing-validation-script matches when stderr is empty but error line shows pnpm run test', () => {
-    const skill = new MissingValidationScriptRepairSkill(null as never);
-    const m = skill.match({
+  it('missing-validation-script matches when stderr is empty but error line shows pnpm run test', async () => {
+    const skill = new MissingValidationScriptRepairSkill({
+      callLLM: async () =>
+        '{"fixSteps":[{"action":"runCommand","args":{"command":"pnpm exec vitest run"}}]}',
+    } as never);
+    const plan = await skill.plan({
       ...baseContext,
       failure: {
         stepIndex: 0,
@@ -330,8 +267,7 @@ describe('repair skills', () => {
         data: {},
       },
     });
-    expect(m.score).toBeGreaterThan(0.9);
-    expect(m.reason).toContain('missing validation script');
+    expect(plan?.reason).toContain('missing validation script');
   });
 
   it('missing-validation-script prefers pnpm exec vitest run without rewriting package.json', async () => {
@@ -377,9 +313,12 @@ describe('repair skills', () => {
     }
   });
 
-  it('missing-validation-script skill also matches absent vitest script', async () => {
+  it('missing-validation-script handles absent vitest script; missing-script defers', async () => {
     const missingScript = new MissingScriptRepairSkill();
-    const validationSkill = new MissingValidationScriptRepairSkill(null as never);
+    const validationSkill = new MissingValidationScriptRepairSkill({
+      callLLM: async () =>
+        '{"fixSteps":[{"action":"readFile","args":{"path":"package.json"}}]}',
+    } as never);
     const failure = {
       stepIndex: 0,
       step: { action: 'runCommand', args: { command: 'pnpm run vitest' } },
@@ -390,16 +329,18 @@ describe('repair skills', () => {
           'ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "vitest" not found\n',
       },
     };
-    expect(missingScript.match({ ...baseContext, failure }).score).toBe(0);
-    const m = validationSkill.match({ ...baseContext, failure });
-    expect(m.score).toBeGreaterThan(0.9);
-    expect(m.reason).toContain('missing validation script');
     expect(await missingScript.plan({ ...baseContext, failure })).toBeNull();
+    const vPlan = await validationSkill.plan({ ...baseContext, failure });
+    expect(vPlan?.reason).toContain('missing validation script');
+    expect(vPlan?.fixSteps?.[0]?.action).toBe('readFile');
   });
 
-  it('missing-acceptance-verify skill matches planning failures before execution', () => {
-    const skill = new MissingAcceptanceVerifyRepairSkill(null as never);
-    const m = skill.match({
+  it('missing-acceptance-verify skill plans when error is worker_llm_missing_acceptance_verify', async () => {
+    const skill = new MissingAcceptanceVerifyRepairSkill({
+      callLLM: async () =>
+        '{"fixSteps":[{"action":"runCommand","args":{"command":"pnpm run build"}}]}',
+    } as never);
+    const plan = await skill.plan({
       ...baseContext,
       failure: {
         stepIndex: -1,
@@ -413,8 +354,7 @@ describe('repair skills', () => {
         },
       },
     });
-    expect(m.score).toBeGreaterThan(0.9);
-    expect(m.reason).toContain('acceptance');
+    expect(plan?.skillId).toBe('missing-acceptance-verify');
+    expect(plan?.fixSteps?.[0]?.args?.command).toBe('pnpm run build');
   });
 });
-

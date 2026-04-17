@@ -8,6 +8,21 @@ import {
 import type { RepairSkill } from '../repair-skill.interface';
 import type { FixPlan, RepairContext } from '../repair.types';
 
+const TEST_ASSERTION_REPAIR_HINT = `
+# 本轮为「测试运行时 / Testing Library 断言失败」修复（非 tsc 编译）
+失败信息里常见：TestingLibraryElementError、找不到文案/角色、Found multiple elements、expect 断言失败等。
+请根据堆栈中的文件与行号：
+1) 用 readFile 读取相关 **src/** 下的业务源码与测试文件（path 相对 projectRoot）
+2) 用 writeFile 做最小修改；可改 **业务组件**（*.tsx 等）或 **测试**（*.test.tsx、*.spec.tsx）、**测试种子数据 / localStorage 预置**、**导出的常量**（如 storage key）等，使测试意图与实现一致
+3) 若测试先写了 localStorage 但应用用另一 key 读取，应统一为同一导出常量或同一字符串，而不是只重跑测试
+4) 不要用 pnpm install 敷衍；非缺包不要 install
+5) 仍须遵守：path 无 ..；禁止 pnpm run dev；验证可再跑失败的测试命令（如 pnpm run test）
+
+仅返回 JSON：{"fixSteps":[{"action":"...","args":{...}}]}，fixSteps 最多 10 条。
+`;
+
+const MAX_FIX_STEPS = 10;
+
 function parseFixSteps(raw: string): WorkerLlmStep[] | null {
   const text = raw.trim();
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -37,23 +52,24 @@ function parseFixSteps(raw: string): WorkerLlmStep[] | null {
           : {};
       out.push({ action, args });
     }
-    return out.slice(0, 8);
+    return out.slice(0, MAX_FIX_STEPS);
   } catch {
     return null;
   }
 }
 
 @Injectable()
-export class ConfigErrorRepairSkill implements RepairSkill {
-  readonly id = 'config-error';
+export class VitestRtlAssertionRepairSkill implements RepairSkill {
+  readonly id = 'vitest-rtl-assertion';
 
   constructor(private readonly llm: WorkflowLlmService) {}
 
   async plan(context: RepairContext): Promise<FixPlan | null> {
-    const raw = await this.llm.callLLM(
-      REPAIR_SKILL_SYSTEM_PROMPT,
-      buildRepairSkillUserPrompt(context),
-    );
+    const user =
+      buildRepairSkillUserPrompt(context) +
+      '\n' +
+      TEST_ASSERTION_REPAIR_HINT;
+    const raw = await this.llm.callLLM(REPAIR_SKILL_SYSTEM_PROMPT, user);
     const fixSteps = parseFixSteps(raw);
     if (!fixSteps || fixSteps.length === 0) {
       return null;
@@ -61,8 +77,10 @@ export class ConfigErrorRepairSkill implements RepairSkill {
     return {
       skillId: this.id,
       score: 1,
-      category: 'config_error',
-      reason: context.triage?.rationale || 'config-related repair from LLM',
+      category: 'test_assertion',
+      reason:
+        context.triage?.rationale ||
+        'vitest/testing-library assertion or DOM query failure',
       fixSteps,
     };
   }

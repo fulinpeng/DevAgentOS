@@ -7,9 +7,11 @@ import {
   dedupeConsecutiveIdenticalRunCommands,
   findMissingPackageScriptForVerification,
   fingerprintRepairWriteIntentsForTest,
+  parseWorkerLlmOutputForTest,
   repairPlanTouchesBusinessFilesForTest,
   repairPlanIsMeaningfulForValidationFailureForTest,
   sanitizeRepairStepsByPolicy,
+  shouldInjectParentTaskContextForTest,
   shouldSkipReplayingFailedStepAfterRepairForTest,
 } from './worker.executor.service';
 
@@ -537,6 +539,22 @@ describe('repairPlanIsMeaningfulForValidationFailureForTest', () => {
   });
 });
 
+describe('shouldInjectParentTaskContextForTest', () => {
+  it('returns true when task description asks parent context', () => {
+    expect(
+      shouldInjectParentTaskContextForTest(
+        '请携带父级任务描述，感知父任务目标后再继续当前实现',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false for unrelated task description', () => {
+    expect(
+      shouldInjectParentTaskContextForTest('仅修复当前组件中的空指针错误'),
+    ).toBe(false);
+  });
+});
+
 describe('assessRepairPolicyForTest', () => {
   it('classifies validation env mismatch as validation_fix intent', () => {
     const assessment = assessRepairPolicyForTest(
@@ -554,5 +572,17 @@ describe('assessRepairPolicyForTest', () => {
     );
     expect(assessment.intent).toBe('validation_fix');
     expect(['low', 'medium', 'high']).toContain(assessment.risk);
+  });
+});
+
+describe('parseWorkerLlmOutputForTest', () => {
+  it('parses first object when streamed response concatenates two JSON objects', () => {
+    const raw =
+      '{"steps":[{"action":"readFile","args":{"path":"package.json"}}]}' +
+      '{"steps":[{"action":"runCommand","args":{"command":"pnpm run test"}}]}';
+    const parsed = parseWorkerLlmOutputForTest(raw);
+    expect(parsed).toEqual([
+      { action: 'readFile', args: { path: 'package.json' } },
+    ]);
   });
 });

@@ -7,10 +7,6 @@ import {
 } from '../repair-llm.prompt';
 import type { RepairSkill } from '../repair-skill.interface';
 import type { FixPlan, RepairContext } from '../repair.types';
-import {
-  getRunCommandFailureText,
-  looksLikeCompileOrTypeError,
-} from '../run-command-failure-text';
 
 const TS_BUILD_REPAIR_HINT = `
 # 本轮为「构建/类型检查失败」修复
@@ -75,22 +71,7 @@ export class TypeScriptBuildRepairSkill implements RepairSkill {
 
   constructor(private readonly llm: WorkflowLlmService) {}
 
-  match(context: RepairContext): { score: number; reason: string } {
-    if (context.failure.tool !== 'runCommand') {
-      return { score: 0, reason: 'not runCommand' };
-    }
-    const blob = getRunCommandFailureText(context.failure);
-    if (!looksLikeCompileOrTypeError(blob)) {
-      return { score: 0, reason: 'not compile/type output' };
-    }
-    return { score: 0.88, reason: 'tsc/vite TypeScript or compile errors in output' };
-  }
-
   async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
-      return null;
-    }
     const user =
       buildRepairSkillUserPrompt(context) +
       '\n' +
@@ -105,9 +86,9 @@ export class TypeScriptBuildRepairSkill implements RepairSkill {
     }
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'compile_error',
-      reason: m.reason,
+      reason: context.triage?.rationale || 'tsc/vite TypeScript or compile errors',
       fixSteps,
     };
   }

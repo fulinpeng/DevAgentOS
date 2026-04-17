@@ -14,26 +14,14 @@ function isUnsafeFullOverwriteFailure(context: RepairContext): boolean {
 export class UnsafeFullOverwriteRepairSkill implements RepairSkill {
   readonly id = 'unsafe-full-overwrite';
 
-  match(context: RepairContext): { score: number; reason: string } {
-    if (!isUnsafeFullOverwriteFailure(context)) {
-      return { score: 0, reason: 'not unsafe full overwrite failure' };
-    }
-    const path = String(context.failure.step.args.path ?? '').trim();
-    if (!path) {
-      return { score: 0, reason: 'missing target path' };
-    }
-    return {
-      score: 0.98,
-      reason: `existing file requires read before overwrite: ${path}`,
-    };
-  }
-
   async plan(context: RepairContext): Promise<FixPlan | null> {
-    const m = this.match(context);
-    if (m.score <= 0) {
+    if (!isUnsafeFullOverwriteFailure(context)) {
       return null;
     }
     const path = String(context.failure.step.args.path ?? '').trim();
+    if (!path) {
+      return null;
+    }
     const content = String(context.failure.step.args.content ?? '');
     const fixSteps: WorkerLlmStep[] = [
       { action: 'readFile', args: { path } },
@@ -48,9 +36,9 @@ export class UnsafeFullOverwriteRepairSkill implements RepairSkill {
     ];
     return {
       skillId: this.id,
-      score: m.score,
+      score: 1,
       category: 'config_error',
-      reason: m.reason,
+      reason: `existing file requires read before overwrite: ${path}`,
       fixSteps,
     };
   }
