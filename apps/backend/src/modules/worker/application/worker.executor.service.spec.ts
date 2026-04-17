@@ -6,6 +6,7 @@ import {
   dedupeConsecutiveIdenticalRunCommands,
   findMissingPackageScriptForVerification,
   fingerprintRepairWriteIntentsForTest,
+  repairPlanTouchesBusinessFilesForTest,
   sanitizeRepairStepsByPolicy,
   shouldSkipReplayingFailedStepAfterRepairForTest,
 } from './worker.executor.service';
@@ -397,5 +398,25 @@ describe('coerceWriteFileStepsForExistingTargets', () => {
     ];
     const out = coerceWriteFileStepsForExistingTargets(dir, steps);
     expect(out).toEqual(steps);
+  });
+});
+
+describe('repairPlanTouchesBusinessFilesForTest', () => {
+  it('returns true when writeFile touches src business files', () => {
+    expect(
+      repairPlanTouchesBusinessFilesForTest([
+        { action: 'writeFile', args: { path: 'src/hooks/useTodos.ts', content: 'x' } },
+      ]),
+    ).toBe(true);
+  });
+
+  it('returns false for only tests/config writes', () => {
+    expect(
+      repairPlanTouchesBusinessFilesForTest([
+        { action: 'writeFile', args: { path: 'src/App.test.tsx', content: 'x' } },
+        { action: 'writeFile', args: { path: 'src/setupTests.ts', content: 'x' } },
+        { action: 'writeFile', args: { path: 'vitest.config.ts', content: 'x' } },
+      ]),
+    ).toBe(false);
   });
 });

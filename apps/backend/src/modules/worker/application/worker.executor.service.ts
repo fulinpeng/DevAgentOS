@@ -808,6 +808,52 @@ function isMissingValidationScriptFailure(failure: RepairFailure): boolean {
   );
 }
 
+function isValidationCommand(command: string): boolean {
+  const cmd = command.toLowerCase();
+  return (
+    /\bpnpm\s+run\s+test\b/.test(cmd) ||
+    /\bnpm\s+run\s+test\b/.test(cmd) ||
+    /\byarn\s+(run\s+)?test\b/.test(cmd) ||
+    /\bpnpm\s+exec\s+vitest\b/.test(cmd) ||
+    /\bnpx\s+vitest\b/.test(cmd) ||
+    /\bpnpm\s+run\s+verify\b/.test(cmd) ||
+    /\bpnpm\s+run\s+check\b/.test(cmd) ||
+    /\bpnpm\s+run\s+e2e\b/.test(cmd)
+  );
+}
+
+function isBusinessSourcePath(pathLike: unknown): boolean {
+  const p = normalizeRelPathForPolicy(pathLike);
+  if (!p.startsWith('src/')) {
+    return false;
+  }
+  if (
+    p.includes('/__tests__/') ||
+    p.endsWith('.test.ts') ||
+    p.endsWith('.test.tsx') ||
+    p.endsWith('.spec.ts') ||
+    p.endsWith('.spec.tsx') ||
+    p === 'src/setuptests.ts'
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function repairPlanTouchesBusinessFiles(fixSteps: WorkerLlmStep[]): boolean {
+  return fixSteps.some(
+    (s) =>
+      normalizeAction(s.action) === 'writeFile' &&
+      isBusinessSourcePath(s.args.path),
+  );
+}
+
+export function repairPlanTouchesBusinessFilesForTest(
+  fixSteps: WorkerLlmStep[],
+): boolean {
+  return repairPlanTouchesBusinessFiles(fixSteps);
+}
+
 function shouldSkipReplayingFailedStepAfterRepair(
   failure: RepairFailure,
   remainingStep: WorkerLlmStep | undefined,
@@ -1751,6 +1797,37 @@ export class WorkerExecutorService implements IWorkerExecutor {
       }
       if (repairWriteIntentFp) {
         seenRepairWriteIntentFingerprints.add(repairWriteIntentFp);
+      }
+
+      const failedCommand = String(effectiveRun.failure.step.args.command ?? '').trim();
+      if (
+        effectiveRun.failure.tool === 'runCommand' &&
+        isValidationCommand(failedCommand) &&
+        !repairPlanTouchesBusinessFiles(plan.fixSteps)
+      ) {
+        await this.taskRedis.appendExecutionLog(task.id, {
+          step: 'repair_plan_rejected_no_business_change',
+          time: new Date().toISOString(),
+          meta: {
+            attempt,
+            skillId: plan.skillId,
+            category: plan.category,
+            failedCommand,
+            hint:
+              '测试命令失败后，修复方案未修改 src/ 业务文件；请先修复报错指向的业务代码再重跑测试。',
+          },
+        });
+        history.push({
+          attempt,
+          skillId: plan.skillId,
+          category: plan.category,
+          success: false,
+          reason:
+            'validation command failed but repair plan does not touch business files',
+        });
+        // 跳过本次“无业务改动”的修复方案，继续下一轮自动修复，不直接失败。
+        currentSteps = effectiveRun.remainingSteps;
+        continue;
       }
 
       await this.taskRedis.appendExecutionLog(task.id, {
