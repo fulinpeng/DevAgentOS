@@ -14,6 +14,15 @@ const DEFAULT_COMPAT_URL =
 /** DashScope 兼容 OpenAI Chat Completions；超时避免长时间挂起 */
 const LLM_REQUEST_TIMEOUT_MS = 120_000;
 
+export type CallLlmOptions = {
+  /**
+   * 使用 OpenAI 兼容的 `response_format: { type: "json_object" }`（DashScope 亦支持）。
+   * 将单次补全约束为**一个** JSON 对象，从协议层避免模型在同一条回复里拼接多段 `{...}{...}`。
+   * 要求 messages 中含 “json” 字样（见阿里云文档）；不适用于需返回 JSON 数组的接口（如部分 workflow 拆分）。
+   */
+  jsonObject?: boolean;
+};
+
 function getDashScopeApiKey(config: ConfigService): string {
   return (
     config.get<string>('DASHSCOPE_API_KEY') ??
@@ -32,11 +41,54 @@ export class WorkflowLlmService {
 
   constructor(private readonly config: ConfigService) {}
 
+  private async postChatCompletion(params: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    systemPrompt: string;
+    userPrompt: string;
+    jsonObject: boolean;
+  }): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      LLM_REQUEST_TIMEOUT_MS,
+    );
+    try {
+      const body: Record<string, unknown> = {
+        model: params.model,
+        messages: [
+          { role: 'system', content: params.systemPrompt },
+          { role: 'user', content: params.userPrompt },
+        ],
+        temperature: 0.2,
+      };
+      if (params.jsonObject) {
+        body.response_format = { type: 'json_object' };
+      }
+      return await fetch(params.baseUrl, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${params.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   /**
    * 通用调用：传入完整 user 内容时可配合外部 system。
    * 默认用于拆分任务时请使用 {@link callSplitTaskJson}。
    */
-  async callLLM(systemPrompt: string, userPrompt: string): Promise<string> {
+  async callLLM(
+    systemPrompt: string,
+    userPrompt: string,
+    options?: CallLlmOptions,
+  ): Promise<string> {
     const apiKey = getDashScopeApiKey(this.config);
     if (!apiKey) {
       throw new Error('DASHSCOPE_API_KEY or QWEN_API_KEY is not set');
@@ -45,39 +97,45 @@ export class WorkflowLlmService {
     const baseUrl =
       this.config.get<string>('LLM_BASE_URL') ?? DEFAULT_COMPAT_URL;
     const model = this.config.get<string>('LLM_MODEL', 'qwen-turbo');
+    const wantJsonObject = Boolean(options?.jsonObject);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      LLM_REQUEST_TIMEOUT_MS,
-    );
-
-    let res: Response;
-    try {
-      res = await fetch(baseUrl, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
+    const run = async (jsonObject: boolean): Promise<Response> => {
+      try {
+        return await this.postChatCompletion({
+          baseUrl,
+          apiKey,
           model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.2,
-        }),
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('abort') || msg.includes('Abort')) {
-        throw new Error(`LLM request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`);
+          systemPrompt,
+          userPrompt,
+          jsonObject,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('abort') || msg.includes('Abort')) {
+          throw new Error(
+            `LLM request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`,
+          );
+        }
+        throw e;
       }
-      throw e;
-    } finally {
-      clearTimeout(timeout);
+    };
+
+    let res = await run(wantJsonObject);
+
+    if (!res.ok && wantJsonObject && res.status === 400) {
+      const errText = await res.text();
+      const retriable =
+        /response_format|json_object|must contain the word ['"]json['"]/i.test(
+          errText,
+        );
+      if (retriable) {
+        this.logger.warn(
+          `LLM json_object 模式被拒（400），回退为普通补全：${errText.slice(0, 400)}`,
+        );
+        res = await run(false);
+      } else {
+        throw new Error(`LLM request failed ${res.status}: ${errText}`);
+      }
     }
 
     if (!res.ok) {
@@ -99,7 +157,7 @@ export class WorkflowLlmService {
       /* keep raw */
     }
     this.logger.log(
-      `LLM 请求成功（已接入）：model=${model} endpoint=${host} charsOut=${content.trim().length}`,
+      `LLM 请求成功（已接入）：model=${model} endpoint=${host} charsOut=${content.trim().length} jsonObjectRequested=${wantJsonObject}`,
     );
     return content.trim();
   }

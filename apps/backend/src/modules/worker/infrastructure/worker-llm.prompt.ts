@@ -22,6 +22,7 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 # 输出格式（仅一条 JSON，不要 markdown 代码块，不要解释性文字）
 
 必须包含顶层字段 "steps"，为数组；每一项为 { "action": string, "args": object }。
+服务端对本任务启用 JSON Object 模式：整条回复只能是**一个**顶层 JSON 对象，禁止在同一条回复里再输出第二段以「{」开头的另一份 JSON（例如重复整份 steps）。
 
 # 路径规则
 

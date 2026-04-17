@@ -70,6 +70,7 @@ type StepExecutionOutcome =
 
 /**
  * 解析 LLM 输出：优先 `steps[]`，否则兼容单条 `{ action, args }`。
+ * Worker 请求侧已启用 `response_format: json_object`，单次补全应为唯一顶层对象，避免两段 JSON 拼接。
  */
 function parseWorkerLlmOutput(text: string): WorkerLlmStep[] | null {
   const trimmed = text.trim();
@@ -1080,7 +1081,9 @@ export class WorkerExecutorService implements IWorkerExecutor {
     });
     let raw: string;
     try {
-      raw = await this.llm.callLLM(WORKER_TOOL_SYSTEM_PROMPT, user);
+      raw = await this.llm.callLLM(WORKER_TOOL_SYSTEM_PROMPT, user, {
+        jsonObject: true,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.warn(`Worker LLM failed: ${msg}`);
@@ -1156,7 +1159,9 @@ export class WorkerExecutorService implements IWorkerExecutor {
       );
       let retryRaw: string | null = null;
       try {
-        retryRaw = await this.llm.callLLM(WORKER_TOOL_SYSTEM_PROMPT, retryUser);
+        retryRaw = await this.llm.callLLM(WORKER_TOOL_SYSTEM_PROMPT, retryUser, {
+          jsonObject: true,
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         await this.taskRedis.appendExecutionLog(task.id, {
