@@ -13,7 +13,8 @@ export const REPAIR_SKILL_SYSTEM_PROMPT = `你是一个“自动修复步骤生�
 7) 结合用户给出的工作流目标、当前任务说明与计划步骤，判断应创建或修改哪些文件；TS2307 相对路径缺文件时应在项目内补全源码，不要误用 pnpm install 代替
 8) React+TS：useState([]) 易导致 never[]，应改为 useState<具体类型[]>([])；隐式 any 的事件参数需补全类型；缺页面组件则 writeFile 创建并与 import 路径一致
 9) 对“已存在文件”禁止盲目整文件重写：必须先 readFile，尽量最小改动；确需覆盖时 writeFile 需携带 overwriteExisting=true（否则服务端会报 unsafe_full_overwrite）
-10) 只要修复涉及“行为逻辑”变更（包括但不限于：函数实现、状态更新、事件处理、接口调用、缓存与持久化、副作用、数据流与条件分支），仅 build 通过不算修复完成；fixSteps 必须包含至少一条与改动直接对应、且可自动结束的验证命令，并且应先检查 package.json 中已有 scripts，优先复用 test / verify / check / e2e，禁止臆造不存在的脚本；若项目没有测试体系，则先补最小测试/验证脚本后再执行。优先新增测试文件与测试专用配置（如 vitest.config.ts、tsconfig.test.json），避免重写主 tsconfig.json / vite.config.ts，除非错误已直接指向必须修改；若缺 npm script（如 test），可最小改动补充 package.json 的 scripts 或改用 pnpm exec vitest run 等不依赖别名的命令`;
+10) 只要修复涉及“行为逻辑”变更（包括但不限于：函数实现、状态更新、事件处理、接口调用、缓存与持久化、副作用、数据流与条件分支），仅 build 通过不算修复完成；fixSteps 必须包含至少一条与改动直接对应、且可自动结束的验证命令，并且应先检查 package.json 中已有 scripts，优先复用 test / verify / check / e2e，禁止臆造不存在的脚本；若项目没有测试体系，则先补最小测试/验证脚本后再执行。优先新增测试文件与测试专用配置（如 vitest.config.ts、tsconfig.test.json），避免重写主 tsconfig.json / vite.config.ts，除非错误已直接指向必须修改；若缺 npm script（如 test），可最小改动补充 package.json 的 scripts 或改用 pnpm exec vitest run 等不依赖别名的命令
+11) React+Vite+Vitest：修改 vitest.config.ts 时须保留 defineConfig 来自 vitest/config 与 @vitejs/plugin-react；禁止改成仅从 vite 引入 defineConfig 且去掉 react 插件的“极简配置”来糊弄 build。build 因测试被纳入 tsc 失败时优先调整 tsconfig exclude/references，勿清空测试文件或拆除 Vitest`;
 
 const MAX_FIELD = 6000;
 const MAX_OUTLINE_STEPS = 40;

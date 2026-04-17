@@ -43,6 +43,7 @@ export const WORKER_TOOL_SYSTEM_PROMPT = `你是一个专业的软件工程执�
 9. 每一步必须真实可执行；runCommand 会**阻塞到命令退出**。开发服务器（dev/preview）不会自行退出，会导致步骤卡死，已被服务端拒绝；请用 build 等命令验证。
 10. 只要任务改动了“行为逻辑”（包括但不限于：新增/修改函数、状态更新流程、事件处理、接口调用、缓存与持久化、副作用、数据流与条件分支），仅 build 通过都不算完成。steps 中必须包含至少一条与本次改动直接对应、且可自动结束的验证命令。选择验证命令前，先检查 \`package.json\` 里已有 scripts，优先复用现成的 \`test / verify / check / e2e\`；不要臆造不存在的脚本。若当前项目确无测试体系，则先补最小测试/验证脚本（及所需依赖/配置），再用 runCommand 实际执行。
 11. 若新增 Vitest/Jest 等测试文件或 \`vitest.config.ts\`：必须让验证命令与 \`package.json\` 一致——要么写入 \`scripts.test\`（如 \`"test": "vitest run"\`）再执行 \`pnpm run test\`，要么直接使用 \`pnpm exec vitest run\`；**禁止**在 scripts 中不存在 \`test\` 时仍调用 \`pnpm run test\`。
+12. **Vitest + Vite + React**：\`vitest.config.ts\` 须用 \`import { defineConfig } from 'vitest/config'\`，并保留 \`@vitejs/plugin-react\` 的 \`react()\` 插件（与现有项目一致）；**禁止**为「让 build 过」而改成只从 \`vite\` 引入 defineConfig、删掉 React 插件与 \`vitest/config\`，否则会破坏测试与 JSX 编译。若 \`pnpm run build\`（\`tsc -b\`）报测试/config 相关类型错误，优先用 \`tsconfig.app.json\` 的 exclude、references 或把测试移出 app 编译范围，**不要**用空 \`export {}\` 清空 \`App.test.tsx\` 或拆除 Vitest 配置敷衍过关。
 
 只输出 JSON。`;
 

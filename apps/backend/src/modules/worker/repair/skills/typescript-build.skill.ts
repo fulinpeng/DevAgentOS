@@ -28,6 +28,7 @@ const TS_BUILD_REPAIR_HINT = `
 - 对 Vite + React 项目补测试时，优先使用 Vitest + Testing Library；不要引入 Enzyme、React 16 adapter、setupTests 中的 enzyme configure 等过时方案。
 - 若报错来自 src/__tests__/*、src/setupTests.ts、vitest/config、enzyme、@testing-library 等测试工具链，优先修测试文件、src/setupTests.ts、vitest.config.ts 与 package.json test 脚本；不要假设业务组件会导出 getTodos/setTodos 之类未声明符号。
 - Vitest 报错「Invalid Chai property: toBeInTheDocument」等：说明未注册 @testing-library/jest-dom。在 setup 文件（如 src/setupTests.ts）顶部加 \`import '@testing-library/jest-dom/vitest'\`，并在 vitest.config.ts 的 test.setupFiles 中指向该文件；不要误用 pnpm install 解决。
+- **禁止**把 vitest.config.ts 改成「仅从 vite 引入 defineConfig、无 plugins、无 vitest/config」的极简版；React 项目须保留 \`import { defineConfig } from 'vitest/config'\` 与 \`plugins: [react()]\`（@vitejs/plugin-react），除非 stderr 明确要求改 import。为通过 \`tsc -b\` 应改 tsconfig 的 include/exclude/references 或测试文件类型，**不要**删除测试或 gut vitest 配置。
 - 除非报错直接指向入口文件，否则不要把 src/main.tsx 改成测试修复的一部分；除非明显需要 Vite 测试配置，否则不要优先修改 vite.config.ts。
 `;
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import { Injectable, Logger } from '@nestjs/common';
@@ -24,7 +24,10 @@ import {
   WORKER_TOOL_SYSTEM_PROMPT,
 } from '../infrastructure/worker-llm.prompt';
 import { RepairEngine } from '../repair/repair.engine';
-import { getRunCommandFailureText } from '../repair/run-command-failure-text';
+import {
+  getRunCommandFailureText,
+  looksLikeCompileOrTypeError,
+} from '../repair/run-command-failure-text';
 import {
   buildRepairSnapshot,
   type RepairContext,
@@ -33,6 +36,7 @@ import {
 } from '../repair/repair.types';
 import { ToolExecutor, type ToolExecuteResult } from '../tool/tool-executor';
 import { normalizeAction } from '../tool/action-normalize';
+import { resolveUnderBase } from '../tool/path-sandbox';
 
 function getDashScopeApiKey(config: ConfigService): string {
   return (
@@ -559,6 +563,96 @@ function normalizeRelPathForPolicy(pathLike: unknown): string {
     .toLowerCase();
 }
 
+/**
+ * 对「目标文件已存在」的 writeFile：若未带 overwriteExisting，则自动插入 readFile（若尚未紧邻同路径读）
+ * 并补上 overwriteExisting=true，避免多文件批处理时逐步触发 unsafe_full_overwrite、耗尽 repair 次数。
+ */
+export function coerceWriteFileStepsForExistingTargets(
+  baseDir: string,
+  steps: WorkerLlmStep[],
+): WorkerLlmStep[] {
+  const out: WorkerLlmStep[] = [];
+  let lastEmitted: WorkerLlmStep | undefined;
+
+  for (const step of steps) {
+    const action = normalizeAction(step.action);
+    if (action !== 'writeFile') {
+      out.push(step);
+      lastEmitted = step;
+      continue;
+    }
+    const rawPath = String(step.args.path ?? '').trim().replace(/\\/g, '/');
+    if (!rawPath) {
+      out.push(step);
+      lastEmitted = step;
+      continue;
+    }
+    const overwrite =
+      step.args.overwriteExisting === true || step.args.allowOverwrite === true;
+    let full: string;
+    try {
+      full = resolveUnderBase(baseDir, rawPath);
+    } catch {
+      out.push(step);
+      lastEmitted = step;
+      continue;
+    }
+    if (overwrite) {
+      out.push(step);
+      lastEmitted = step;
+      continue;
+    }
+    let existingFile = false;
+    try {
+      if (existsSync(full)) {
+        existingFile = statSync(full).isFile();
+      }
+    } catch {
+      existingFile = false;
+    }
+    if (!existingFile) {
+      out.push(step);
+      lastEmitted = step;
+      continue;
+    }
+    const prevReadSame =
+      lastEmitted &&
+      normalizeAction(lastEmitted.action) === 'readFile' &&
+      normalizeRelPathForPolicy(lastEmitted.args.path) ===
+        normalizeRelPathForPolicy(rawPath);
+    if (!prevReadSame) {
+      out.push({ action: 'readFile', args: { path: rawPath } });
+    }
+    out.push({
+      ...step,
+      args: { ...step.args, path: rawPath, overwriteExisting: true },
+    });
+    lastEmitted = out[out.length - 1];
+  }
+  return out;
+}
+
+/** 合并连续的相同 runCommand，避免 LLM 重复输出两遍验证命令浪费步数与 repair 额度 */
+export function dedupeConsecutiveIdenticalRunCommands(
+  steps: WorkerLlmStep[],
+): WorkerLlmStep[] {
+  const out: WorkerLlmStep[] = [];
+  for (const step of steps) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      normalizeAction(step.action) === 'runCommand' &&
+      normalizeAction(prev.action) === 'runCommand' &&
+      String(prev.args.command ?? '').trim() ===
+        String(step.args.command ?? '').trim()
+    ) {
+      continue;
+    }
+    out.push(step);
+  }
+  return out;
+}
+
 function fingerprintRepairPlan(
   failure: RepairFailure,
   fixSteps: WorkerLlmStep[],
@@ -611,6 +705,26 @@ function isTestConfigRelatedCompileFailure(text: string): boolean {
   ].some((needle) => t.includes(needle));
 }
 
+/** build / tsc / vite build 等「工程编译」类命令失败 */
+function isProjectBuildOrTypecheckCommandFailure(
+  failure: RepairFailure,
+): boolean {
+  if (failure.tool !== 'runCommand') {
+    return false;
+  }
+  const cmd = String(failure.step.args.command ?? '').toLowerCase();
+  return (
+    /\bpnpm\s+run\s+build\b/.test(cmd) ||
+    /\bnpm\s+run\s+build\b/.test(cmd) ||
+    /\byarn\s+(run\s+)?build\b/.test(cmd) ||
+    /\bvite\s+build\b/.test(cmd) ||
+    /\bpnpm\s+exec\s+vite\s+build\b/.test(cmd) ||
+    /\btsc\b/.test(cmd) ||
+    /\bpnpm\s+exec\s+tsc\b/.test(cmd) ||
+    /\bnpx\s+tsc\b/.test(cmd)
+  );
+}
+
 function isMissingValidationScriptFailure(failure: RepairFailure): boolean {
   if (failure.tool !== 'runCommand') {
     return false;
@@ -654,7 +768,12 @@ function shouldSkipReplayingFailedStepAfterRepair(
     failure.tool === 'writeFile' &&
     String(failure.error ?? '').includes('unsafe_full_overwrite');
   if (unsafeOverwriteSkip) {
-    return true;
+    if (!remainingStep || normalizeAction(remainingStep.action) !== 'writeFile') {
+      return false;
+    }
+    const failedPath = normalizeRelPathForPolicy(failure.step.args.path);
+    const nextPath = normalizeRelPathForPolicy(remainingStep.args.path);
+    return Boolean(failedPath && nextPath && failedPath === nextPath);
   }
   if (failure.tool !== 'runCommand') {
     return false;
@@ -730,6 +849,21 @@ export function sanitizeRepairStepsByPolicy(
       touchesProtected.includes('package.json')
     ) {
       allowedProtected.add('package.json');
+    }
+    if (
+      isProjectBuildOrTypecheckCommandFailure(failure) &&
+      looksLikeCompileOrTypeError(failureText)
+    ) {
+      for (const name of [
+        'tsconfig.json',
+        'tsconfig.app.json',
+        'tsconfig.node.json',
+        'package.json',
+      ] as const) {
+        if (touchesProtected.includes(name)) {
+          allowedProtected.add(name);
+        }
+      }
     }
     const blockedProtected = touchesProtected.filter(
       (p) => !allowedProtected.has(p),
@@ -1200,9 +1334,13 @@ export class WorkerExecutorService implements IWorkerExecutor {
     projectRoot: string,
     indexOffset = 0,
   ): Promise<StepExecutionOutcome> {
+    const prepared = coerceWriteFileStepsForExistingTargets(
+      baseDir,
+      dedupeConsecutiveIdenticalRunCommands(steps),
+    );
     const stepResults: StepResultItem[] = [];
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
+    for (let i = 0; i < prepared.length; i++) {
+      const step = prepared[i];
       const index = indexOffset + i;
       await this.taskRedis.appendExecutionLog(taskId, {
         step: 'step_start',
@@ -1249,7 +1387,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
         ok: false,
         stepResults,
         timeout,
-        remainingSteps: steps.slice(i),
+        remainingSteps: prepared.slice(i),
         failure: {
           stepIndex: index,
           step,

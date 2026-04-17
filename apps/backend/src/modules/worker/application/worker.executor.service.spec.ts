@@ -1,4 +1,9 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
+  coerceWriteFileStepsForExistingTargets,
+  dedupeConsecutiveIdenticalRunCommands,
   findMissingPackageScriptForVerification,
   fingerprintRepairWriteIntentsForTest,
   sanitizeRepairStepsByPolicy,
@@ -32,7 +37,7 @@ describe('sanitizeRepairStepsByPolicy', () => {
     }
   });
 
-  it('rejects touching protected tsconfig without direct error evidence', () => {
+  it('allows protected tsconfig.* during compile-related pnpm run build failures', () => {
     const result = sanitizeRepairStepsByPolicy(
       {
         stepIndex: 0,
@@ -44,11 +49,46 @@ describe('sanitizeRepairStepsByPolicy', () => {
       [
         {
           action: 'readFile',
-          args: { path: 'tsconfig.json' },
+          args: { path: 'tsconfig.app.json' },
         },
         {
           action: 'writeFile',
-          args: { path: 'tsconfig.json', content: '{"compilerOptions":{}}', overwriteExisting: true },
+          args: {
+            path: 'tsconfig.app.json',
+            content: '{"compilerOptions":{}}',
+            overwriteExisting: true,
+          },
+        },
+      ],
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects touching protected tsconfig when build output is not compile-like', () => {
+    const result = sanitizeRepairStepsByPolicy(
+      {
+        stepIndex: 0,
+        step: { action: 'runCommand', args: { command: 'pnpm run build' } },
+        tool: 'runCommand',
+        error: 'Command failed: pnpm run build\n',
+        data: { stderr: 'Killed\nOut of memory\n' },
+      },
+      [
+        {
+          action: 'writeFile',
+          args: {
+            path: 'tsconfig.json',
+            content: '{}',
+            overwriteExisting: true,
+          },
+        },
+        {
+          action: 'writeFile',
+          args: {
+            path: 'package.json',
+            content: '{}',
+            overwriteExisting: true,
+          },
         },
       ],
     );
@@ -56,6 +96,7 @@ describe('sanitizeRepairStepsByPolicy', () => {
     if (!result.ok) {
       expect(result.reason).toContain('protected files');
       expect(result.reason).toContain('tsconfig.json');
+      expect(result.reason).toContain('package.json');
     }
   });
 
@@ -117,6 +158,29 @@ describe('sanitizeRepairStepsByPolicy', () => {
     }
   });
 
+  it('allows package.json during compile-related pnpm run build failures', () => {
+    const result = sanitizeRepairStepsByPolicy(
+      {
+        stepIndex: 0,
+        step: { action: 'runCommand', args: { command: 'pnpm run build' } },
+        tool: 'runCommand',
+        error: 'Command failed: pnpm run build\n',
+        data: { stderr: "src/App.tsx(1,1): error TS2304: Cannot find name 'foo'\n" },
+      },
+      [
+        {
+          action: 'writeFile',
+          args: {
+            path: 'package.json',
+            content: '{"dependencies":{"react":"^18"}}',
+            overwriteExisting: true,
+          },
+        },
+      ],
+    );
+    expect(result.ok).toBe(true);
+  });
+
   it('allows package.json update when validation script is missing', () => {
     const result = sanitizeRepairStepsByPolicy(
       {
@@ -176,19 +240,37 @@ describe('findMissingPackageScriptForVerification', () => {
     expect(missing).toBeNull();
   });
 
-  it('skips replaying unsafe_full_overwrite failed step after repair', () => {
+  it('skips replaying unsafe_full_overwrite failed step after repair (same path only)', () => {
+    const failure = {
+      stepIndex: 0,
+      step: {
+        action: 'writeFile',
+        args: { path: 'src/__tests__/setup.ts', content: 'x' },
+      },
+      tool: 'writeFile' as const,
+      error:
+        'unsafe_full_overwrite: 目标文件已存在。为避免整文件覆盖导致功能丢失，默认禁止直接 writeFile 覆盖；请先 readFile 后做最小改动，并显式传 overwriteExisting=true。',
+    };
     expect(
-      shouldSkipReplayingFailedStepAfterRepairForTest({
-        stepIndex: 0,
-        step: {
-          action: 'writeFile',
-          args: { path: 'src/__tests__/setup.ts', content: 'x' },
-        },
-        tool: 'writeFile',
-        error:
-          'unsafe_full_overwrite: 目标文件已存在。为避免整文件覆盖导致功能丢失，默认禁止直接 writeFile 覆盖；请先 readFile 后做最小改动，并显式传 overwriteExisting=true。',
+      shouldSkipReplayingFailedStepAfterRepairForTest(failure, {
+        action: 'writeFile',
+        args: { path: 'src/__tests__/setup.ts', content: 'x' },
       }),
     ).toBe(true);
+  });
+
+  it('does not skip next writeFile when path differs from unsafe_full_overwrite failure', () => {
+    expect(
+      shouldSkipReplayingFailedStepAfterRepairForTest(
+        {
+          stepIndex: 0,
+          step: { action: 'writeFile', args: { path: 'src/a.ts', content: 'x' } },
+          tool: 'writeFile',
+          error: 'unsafe_full_overwrite: 目标文件已存在',
+        },
+        { action: 'writeFile', args: { path: 'src/b.ts', content: 'y' } },
+      ),
+    ).toBe(false);
   });
 
   it('skips replaying failed runCommand when fix already reran same command', () => {
@@ -228,5 +310,92 @@ describe('findMissingPackageScriptForVerification', () => {
       },
     ]);
     expect(fp1).toBe(fp2);
+  });
+});
+
+describe('dedupeConsecutiveIdenticalRunCommands', () => {
+  it('collapses back-to-back identical runCommand steps', () => {
+    const steps = [
+      { action: 'writeFile', args: { path: 'a.ts', content: '1' } },
+      { action: 'runCommand', args: { command: 'pnpm run build' } },
+      { action: 'runCommand', args: { command: 'pnpm run build' } },
+    ];
+    expect(dedupeConsecutiveIdenticalRunCommands(steps)).toEqual([
+      { action: 'writeFile', args: { path: 'a.ts', content: '1' } },
+      { action: 'runCommand', args: { command: 'pnpm run build' } },
+    ]);
+  });
+
+  it('keeps non-consecutive duplicate runCommands', () => {
+    const steps = [
+      { action: 'runCommand', args: { command: 'pnpm run build' } },
+      { action: 'readFile', args: { path: 'x' } },
+      { action: 'runCommand', args: { command: 'pnpm run build' } },
+    ];
+    expect(dedupeConsecutiveIdenticalRunCommands(steps)).toEqual(steps);
+  });
+});
+
+describe('coerceWriteFileStepsForExistingTargets', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'dao-worker-'));
+    mkdirSync(join(dir, 'src', 'pages'), { recursive: true });
+    writeFileSync(join(dir, 'src/pages/HomePage.tsx'), 'old', 'utf8');
+    writeFileSync(join(dir, 'src/pages/TodoDetailPage.tsx'), 'old2', 'utf8');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('prepends readFile and sets overwriteExisting for writes to existing files', () => {
+    const steps = [
+      {
+        action: 'writeFile',
+        args: { path: 'src/pages/HomePage.tsx', content: 'new' },
+      },
+    ];
+    const out = coerceWriteFileStepsForExistingTargets(dir, steps);
+    expect(out).toEqual([
+      { action: 'readFile', args: { path: 'src/pages/HomePage.tsx' } },
+      {
+        action: 'writeFile',
+        args: {
+          path: 'src/pages/HomePage.tsx',
+          content: 'new',
+          overwriteExisting: true,
+        },
+      },
+    ]);
+  });
+
+  it('does not duplicate read when write is already preceded by readFile same path', () => {
+    const steps = [
+      { action: 'readFile', args: { path: 'src/pages/TodoDetailPage.tsx' } },
+      {
+        action: 'writeFile',
+        args: { path: 'src/pages/TodoDetailPage.tsx', content: 'x' },
+      },
+    ];
+    const out = coerceWriteFileStepsForExistingTargets(dir, steps);
+    expect(out).toEqual([
+      { action: 'readFile', args: { path: 'src/pages/TodoDetailPage.tsx' } },
+      {
+        action: 'writeFile',
+        args: {
+          path: 'src/pages/TodoDetailPage.tsx',
+          content: 'x',
+          overwriteExisting: true,
+        },
+      },
+    ]);
+  });
+
+  it('leaves writeFile unchanged when target file does not exist', () => {
+    const steps = [
+      { action: 'writeFile', args: { path: 'src/new-file.tsx', content: 'x' } },
+    ];
+    const out = coerceWriteFileStepsForExistingTargets(dir, steps);
+    expect(out).toEqual(steps);
   });
 });
