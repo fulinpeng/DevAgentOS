@@ -11,8 +11,33 @@ import {
 const DEFAULT_COMPAT_URL =
   'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
 
-/** DashScope 兼容 OpenAI Chat Completions；超时避免长时间挂起 */
-const LLM_REQUEST_TIMEOUT_MS = 120_000;
+const LLM_REQUEST_TIMEOUT_DEFAULT_MS = 120_000;
+const LLM_REQUEST_TIMEOUT_MIN_MS = 30_000;
+const LLM_REQUEST_TIMEOUT_MAX_MS = 900_000;
+
+function readLlmRequestTimeoutMs(config: ConfigService): number {
+  const raw = config.get<string>('LLM_REQUEST_TIMEOUT_MS');
+  if (raw === undefined || raw.trim() === '') {
+    return LLM_REQUEST_TIMEOUT_DEFAULT_MS;
+  }
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n)) {
+    return LLM_REQUEST_TIMEOUT_DEFAULT_MS;
+  }
+  return Math.min(
+    LLM_REQUEST_TIMEOUT_MAX_MS,
+    Math.max(LLM_REQUEST_TIMEOUT_MIN_MS, Math.floor(n)),
+  );
+}
+
+function readLlmStreamEnabled(config: ConfigService): boolean {
+  const raw = config.get<string>('LLM_STREAM');
+  if (!raw) {
+    return false;
+  }
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
 
 export type CallLlmOptions = {
   /**
@@ -48,11 +73,13 @@ export class WorkflowLlmService {
     systemPrompt: string;
     userPrompt: string;
     jsonObject: boolean;
+    stream: boolean;
+    timeoutMs: number;
   }): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
-      LLM_REQUEST_TIMEOUT_MS,
+      params.timeoutMs,
     );
     try {
       const body: Record<string, unknown> = {
@@ -66,6 +93,9 @@ export class WorkflowLlmService {
       if (params.jsonObject) {
         body.response_format = { type: 'json_object' };
       }
+      if (params.stream) {
+        body.stream = true;
+      }
       return await fetch(params.baseUrl, {
         method: 'POST',
         signal: controller.signal,
@@ -78,6 +108,83 @@ export class WorkflowLlmService {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private extractContentFromChunk(chunk: unknown): string {
+    if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) {
+      return '';
+    }
+    const obj = chunk as Record<string, unknown>;
+    const choices = obj.choices;
+    if (!Array.isArray(choices) || choices.length === 0) {
+      return '';
+    }
+    const first = choices[0];
+    if (!first || typeof first !== 'object' || Array.isArray(first)) {
+      return '';
+    }
+    const c = first as Record<string, unknown>;
+    const delta = c.delta;
+    if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+      const content = (delta as Record<string, unknown>).content;
+      return typeof content === 'string' ? content : '';
+    }
+    const message = c.message;
+    if (message && typeof message === 'object' && !Array.isArray(message)) {
+      const content = (message as Record<string, unknown>).content;
+      return typeof content === 'string' ? content : '';
+    }
+    return '';
+  }
+
+  private async readStreamedContent(res: Response): Promise<string> {
+    if (!res.body) {
+      throw new Error('LLM stream response body is empty');
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let out = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let nl = buffer.indexOf('\n');
+      while (nl >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line.startsWith('data:')) {
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') {
+            break;
+          }
+          if (payload) {
+            try {
+              const parsed = JSON.parse(payload) as unknown;
+              out += this.extractContentFromChunk(parsed);
+            } catch {
+              /* 忽略非 JSON 行，兼容部分代理注入噪声 */
+            }
+          }
+        }
+        nl = buffer.indexOf('\n');
+      }
+    }
+    const tail = decoder.decode();
+    if (tail) {
+      buffer += tail;
+    }
+    if (buffer.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(buffer.trim()) as unknown;
+        out += this.extractContentFromChunk(parsed);
+      } catch {
+        /* ignore trailing non-json */
+      }
+    }
+    return out.trim();
   }
 
   /**
@@ -98,8 +205,13 @@ export class WorkflowLlmService {
       this.config.get<string>('LLM_BASE_URL') ?? DEFAULT_COMPAT_URL;
     const model = this.config.get<string>('LLM_MODEL', 'qwen-turbo');
     const wantJsonObject = Boolean(options?.jsonObject);
+    const useStream = readLlmStreamEnabled(this.config);
+    const timeoutMs = readLlmRequestTimeoutMs(this.config);
 
-    const run = async (jsonObject: boolean): Promise<Response> => {
+    const run = async (
+      jsonObject: boolean,
+      stream: boolean,
+    ): Promise<Response> => {
       try {
         return await this.postChatCompletion({
           baseUrl,
@@ -108,12 +220,16 @@ export class WorkflowLlmService {
           systemPrompt,
           userPrompt,
           jsonObject,
+          stream,
+          timeoutMs,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('abort') || msg.includes('Abort')) {
+          const inner =
+            e instanceof Error ? `${e.name}: ${e.message}` : String(e);
           throw new Error(
-            `LLM request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`,
+            `LLM request timed out after ${timeoutMs}ms (${inner})`,
             { cause: e },
           );
         }
@@ -121,7 +237,7 @@ export class WorkflowLlmService {
       }
     };
 
-    let res = await run(wantJsonObject);
+    let res = await run(wantJsonObject, useStream);
 
     if (!res.ok && wantJsonObject && res.status === 400) {
       const errText = await res.text();
@@ -133,7 +249,7 @@ export class WorkflowLlmService {
         this.logger.warn(
           `LLM json_object 模式被拒（400），回退为普通补全：${errText.slice(0, 400)}`,
         );
-        res = await run(false);
+        res = await run(false, useStream);
       } else {
         throw new Error(`LLM request failed ${res.status}: ${errText}`);
       }
@@ -144,10 +260,11 @@ export class WorkflowLlmService {
       throw new Error(`LLM request failed ${res.status}: ${text}`);
     }
 
-    const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = data.choices?.[0]?.message?.content;
+    const content = useStream
+      ? await this.readStreamedContent(res)
+      : ((await res.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        }).choices?.[0]?.message?.content;
     if (typeof content !== 'string' || !content.trim()) {
       throw new Error('LLM returned empty or invalid content');
     }
@@ -158,7 +275,7 @@ export class WorkflowLlmService {
       /* keep raw */
     }
     this.logger.log(
-      `LLM 请求成功（已接入）：model=${model} endpoint=${host} charsOut=${content.trim().length} jsonObjectRequested=${wantJsonObject}`,
+      `LLM 请求成功（已接入）：model=${model} endpoint=${host} charsOut=${content.trim().length} jsonObjectRequested=${wantJsonObject} stream=${useStream}`,
     );
     return content.trim();
   }

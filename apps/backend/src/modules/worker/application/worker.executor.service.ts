@@ -104,6 +104,15 @@ function llmErrorMetaForRedis(e: unknown): Record<string, unknown> {
   if (uniq.length > 0) {
     meta.errnoCodes = uniq;
   }
+  /** 合并进 message，避免前端只展示 message 时看不到 causeChain */
+  const tail = chain.length > 1 ? chain.slice(1).join(' <- ') : '';
+  const codeStr = uniq.length > 0 ? uniq.join(',') : '';
+  if (tail || codeStr) {
+    meta.message = [message, codeStr && `codes=${codeStr}`, tail && `causes=${tail}`]
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 1200);
+  }
   return meta;
 }
 
