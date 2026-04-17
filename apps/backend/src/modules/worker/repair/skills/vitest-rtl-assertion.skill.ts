@@ -11,12 +11,13 @@ import type { FixPlan, RepairContext } from '../repair.types';
 const TEST_ASSERTION_REPAIR_HINT = `
 # 本轮为「测试运行时 / Testing Library 断言失败」修复（非 tsc 编译）
 失败信息里常见：TestingLibraryElementError、找不到文案/角色、Found multiple elements、expect 断言失败等。
-请根据堆栈中的文件与行号：
-1) 用 readFile 读取相关 **src/** 下的业务源码与测试文件（path 相对 projectRoot）
-2) 用 writeFile 做最小修改；可改 **业务组件**（*.tsx 等）或 **测试**（*.test.tsx、*.spec.tsx）、**测试种子数据 / localStorage 预置**、**导出的常量**（如 storage key）等，使测试意图与实现一致
-3) 若测试先写了 localStorage 但应用用另一 key 读取，应统一为同一导出常量或同一字符串，而不是只重跑测试
-4) 不要用 pnpm install 敷衍；非缺包不要 install
-5) 仍须遵守：path 无 ..；禁止 pnpm run dev；验证可再跑失败的测试命令（如 pnpm run test）
+
+**务必按系统消息开头的「需求 → 测试 → 实现」顺序决策**，本轮补充：
+1) 用 readFile 读堆栈涉及的测试与 **src/** 业务源码；**对照组件实际会渲染出的文案、角色与表单标签（UI 事实）**，再对照 taskDescription / workflowGoal 判断：是 **测试写错了** 还是 **实现未满足需求**。
+2) **测试与需求不一致** → 只改测试（期望、数据、RTL 查询与 within 作用域等），不要改业务去迎合错误断言。
+3) **测试已正确表达需求** → 改业务（组件、文案、交互、localStorage key 与数据结构等）；种子数据/存储 key 与生产不一致时，以**同一套需求下的单一事实来源**为准（常是导出常量 + 一致字段名）。
+4) **不得跳过 UI 检测**：断言/查询必须与真实 DOM 一致；多节点、错误 placeholder、错误 role 等要先从界面实现核对再改。
+5) 禁止 pnpm install 敷衍（非缺包不 install）；path 无 ..；禁止 pnpm run dev；最后一步应再跑失败的测试命令（如 pnpm run test）。
 
 仅返回 JSON：{"fixSteps":[{"action":"...","args":{...}}]}，fixSteps 最多 10 条。
 `;

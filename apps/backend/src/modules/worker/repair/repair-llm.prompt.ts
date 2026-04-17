@@ -1,7 +1,19 @@
 import type { RepairContext } from './repair.types';
 
+/** 所有 Repair 技能共用的「需求—测试—实现」顺序，避免「先对齐 UI 再反改测试」 */
+export const REPAIR_REQUIREMENTS_TEST_UI_ORDER = `
+# 决策顺序（必须遵守：需求 → 测试 → 实现）
+
+1) **需求是最高依据**：以当前任务的 taskDescription、workflowGoal、workflow outline 与用户意图为准；不要用「现有 UI 长什么样」当作真理去否定需求。
+2) **先判断测试是否在表达需求**：若失败来自断言/期望与**需求**矛盾，应 **修改测试**（期望、测试数据、查询方式、作用域如 within），使测试成为需求的可执行规格；禁止为了绿灯把业务改成迎合**错误**的测试。
+3) **再判断实现是否满足已校对的测试**：在确认测试与需求一致后仍失败，应 **修改业务代码 / UI / 状态与持久化**，使实现通过测试。
+4) **UI 检测须保留**：读业务组件/页面源码，核对**真实渲染**（文案、role、aria-label、表单标签、可见结构、事件路径）与失败堆栈中的查询是否一致；RTL/DOM 类失败必须以「界面实际长什么样」为事实输入之一，再按 1)～3) 决定改测试还是改实现——**禁止**不看 UI、纯猜断言过关。
+5) **禁止**：未对照任务说明就「让测试迁就当前 UI」；或未核对需求就删断言、空测试敷衍过关。
+`;
+
 export const REPAIR_SKILL_SYSTEM_PROMPT = `你是一个“自动修复步骤生成器”。
 你只输出 JSON，对象顶层必须是 {"fixSteps":[...]}。
+${REPAIR_REQUIREMENTS_TEST_UI_ORDER.trim()}
 
 约束：
 1) 只能使用 action: runCommand|writeFile|createDirectory|readFile|listFiles
