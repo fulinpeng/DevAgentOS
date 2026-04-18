@@ -8,6 +8,42 @@ type Props = {
   scopeHint?: string
 }
 
+/**
+ * 递归处理日志 meta：保留 JSON 结构，仅隐藏名为 `content` 的字段正文（多为 writeFile 整文件）。
+ */
+function redactContentFields(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactContentFields(item))
+  }
+  if (typeof value === 'object') {
+    const o = value as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(o)) {
+      if (k === 'content') {
+        if (typeof v === 'string') {
+          const n = v.length
+          out[k] = n === 0 ? '' : `[已省略 content，共 ${n} 字符]`
+        } else if (v !== null && typeof v === 'object') {
+          out[k] = '[已省略 content（对象/数组）]'
+        } else {
+          out[k] = v
+        }
+      } else {
+        out[k] = redactContentFields(v)
+      }
+    }
+    return out
+  }
+  return value
+}
+
+function formatLogMeta(meta: Record<string, unknown>): string {
+  return JSON.stringify(redactContentFields(meta), null, 2)
+}
+
 export function TaskLogs({ taskId, scopeHint }: Props) {
   const [logs, setLogs] = useState<LogEntry[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -46,14 +82,14 @@ export function TaskLogs({ taskId, scopeHint }: Props) {
       ) : (
         <ul className="log-list">
           {logs.map((entry, i) => (
-            <li key={`${entry.time}-${i}`}>
+            <li key={`${entry.time}-${i}`} className="log-line">
               <span className="log-time">
                 [{new Date(entry.time).toLocaleString()}]
               </span>{' '}
               <code>{entry.step}</code>
-              {entry.meta && (
-                <pre className="log-meta">{JSON.stringify(entry.meta, null, 2)}</pre>
-              )}
+              {entry.meta ? (
+                <pre className="log-meta">{formatLogMeta(entry.meta)}</pre>
+              ) : null}
             </li>
           ))}
         </ul>

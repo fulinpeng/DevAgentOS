@@ -9,15 +9,16 @@ import type { RepairSkill } from '../repair-skill.interface';
 import type { FixPlan, RepairContext } from '../repair.types';
 
 const TEST_ASSERTION_REPAIR_HINT = `
-# 本轮为「测试运行时 / Testing Library 断言失败」修复（非 tsc 编译）
-失败信息里常见：TestingLibraryElementError、找不到文案/角色、Found multiple elements、expect 断言失败等。
+# 本轮为「Vitest 测试运行时失败」（常含 Testing Library；非 tsc 编译）
+失败信息里常见：TestingLibraryElementError、找不到文案/角色、Found multiple、expect 失败等。
 
-**务必按系统消息开头的「需求 → 测试 → 实现」顺序决策**，本轮补充：
-1) 用 readFile 读堆栈涉及的测试与 **src/** 业务源码；**对照组件实际会渲染出的文案、角色与表单标签（UI 事实）**，再对照 taskDescription / workflowGoal 判断：是 **测试写错了** 还是 **实现未满足需求**。
-2) **测试与需求不一致** → 只改测试（期望、数据、RTL 查询与 within 作用域等），不要改业务去迎合错误断言。
-3) **测试已正确表达需求** → 改业务（组件、文案、交互、localStorage key 与数据结构等）；种子数据/存储 key 与生产不一致时，以**同一套需求下的单一事实来源**为准（常是导出常量 + 一致字段名）。
-4) **不得跳过 UI 检测**：断言/查询必须与真实 DOM 一致；多节点、错误 placeholder、错误 role 等要先从界面实现核对再改。
-5) 禁止 pnpm install 敷衍（非缺包不 install）；path 无 ..；禁止 pnpm run dev；最后一步应再跑失败的测试命令（如 pnpm run test）。
+**策略（与系统消息一致）：默认弱化 UI/DOM 测试，优先交互逻辑。**
+
+1) readFile 堆栈中的测试与相关 **src/**（hook、storage、组件）。对照 taskDescription / workflowGoal：**能不改 DOM 就不改**。
+2) **首选（除非任务明确要求保留界面用例）**：把失败用例 **改写为交互逻辑测试**——例如对自定义 hook 使用 \`renderHook\` + mock \`localStorage\`；把「添加批注 / 选任务」等流程拆成 **纯函数或模块级单测**；**删除或大幅收缩** \`screen.getBy*\` / \`userEvent\` 驱动的整页测试。组件可保持薄，逻辑下沉到可测单元。
+3) **次选**（任务明确要求 UI 验收或改写成本过高）：再做 **最小 RTL 修补**——读源码核对 role/label/placeholder/storage 形状与 key；**禁止** 为绿测试大改组件无障碍语义（如 aside 改 dialog）。
+4) **describe is not defined**：vitest \`test.globals: true\` 或测试文件 \`import { describe, it, expect, beforeEach } from 'vitest'\`；\`setupFiles\` 建议数组形式。
+5) 禁止 pnpm install 敷衍（非缺包不 install）；path 无 ..；禁止 pnpm run dev；最后一步应再跑 \`pnpm run test\`（或项目等价脚本）。
 
 仅返回 JSON：{"fixSteps":[{"action":"...","args":{...}}]}，fixSteps 最多 10 条。
 `;

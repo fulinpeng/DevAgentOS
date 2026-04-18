@@ -21,6 +21,7 @@ import {
 import { FileContextService } from '../infrastructure/file-context.service';
 import {
   buildWorkerUserContent,
+  shouldInjectMinimalWorkerScope,
   WORKER_TOOL_SYSTEM_PROMPT,
 } from '../infrastructure/worker-llm.prompt';
 import { RepairEngine } from '../repair/repair.engine';
@@ -37,6 +38,58 @@ import {
 import { ToolExecutor, type ToolExecuteResult } from '../tool/tool-executor';
 import { normalizeAction } from '../tool/action-normalize';
 import { resolveUnderBase } from '../tool/path-sandbox';
+
+/** step_fail 写入 Redis 时 stdout/stderr 上限（避免单条日志撑爆 List） */
+const STEP_FAIL_LOG_STDOUT_MAX = 12_000;
+const STEP_FAIL_LOG_STDERR_MAX = 8_000;
+
+/**
+ * 工具失败时供 Redis 执行日志使用的 meta：保留 error，并附带 runCommand 的 command/cwd 与截断后的 stdout/stderr
+ *（此前仅写 error 首行，前端与人工无法看到 Vite/tsc 具体报错）。
+ */
+export function buildStepFailRedisMeta(
+  index: number,
+  toolResult: ToolExecuteResult,
+): Record<string, unknown> {
+  const meta: Record<string, unknown> = {
+    index,
+    tool: toolResult.tool,
+    error: toolResult.error,
+  };
+  const d = toolResult.data;
+  if (
+    d !== undefined &&
+    d !== null &&
+    typeof d === 'object' &&
+    !Array.isArray(d)
+  ) {
+    const o = d as Record<string, unknown>;
+    if (o.command !== undefined) {
+      meta.command = o.command;
+    }
+    if (o.cwd !== undefined) {
+      meta.cwd = o.cwd;
+    }
+    if (o.code !== undefined) {
+      meta.code = o.code;
+    }
+    if (typeof o.stdout === 'string') {
+      const s = o.stdout;
+      meta.stdout =
+        s.length <= STEP_FAIL_LOG_STDOUT_MAX
+          ? s
+          : `${s.slice(0, STEP_FAIL_LOG_STDOUT_MAX)}…(truncated)`;
+    }
+    if (typeof o.stderr === 'string') {
+      const s = o.stderr;
+      meta.stderr =
+        s.length <= STEP_FAIL_LOG_STDERR_MAX
+          ? s
+          : `${s.slice(0, STEP_FAIL_LOG_STDERR_MAX)}…(truncated)`;
+    }
+  }
+  return meta;
+}
 
 function getDashScopeApiKey(config: ConfigService): string {
   return (
@@ -520,6 +573,22 @@ function extractTaskContext(task: WorkerExecuteInput): {
   return { taskDescription: task.name, goal: task.name };
 }
 
+function extractWorkerScopeHints(task: WorkerExecuteInput): {
+  workerMinimalScope: boolean;
+  executionScope: string | undefined;
+} {
+  const p = task.parameters;
+  if (p !== null && typeof p === 'object' && !Array.isArray(p)) {
+    const r = p as Record<string, unknown>;
+    return {
+      workerMinimalScope: r.workerMinimalScope === true,
+      executionScope:
+        typeof r.executionScope === 'string' ? r.executionScope : undefined,
+    };
+  }
+  return { workerMinimalScope: false, executionScope: undefined };
+}
+
 const PARENT_CONTEXT_HINT_REGEX =
   /(父级|父任务|上级任务|parent task|parent|携带|获取|感知)/i;
 
@@ -1000,6 +1069,25 @@ type RepairPolicyAssessment = {
   allowedProtected: Set<string>;
 };
 
+/**
+ * runCommand 失败时 toolData 是否带有非空的 stdout/stderr。
+ * 在部分环境（或子进程输出未被 Node 填入）下仅有 error 首行；若仍要求 stderr 命中 looksLikeCompileOrTypeError，
+ * 则 detectRepairIntent 会落成 generic，进而拦截对 tsconfig/vite/package 的合法修复。
+ */
+function runCommandFailureHasCapturedOutput(failure: RepairFailure): boolean {
+  if (failure.tool !== 'runCommand') {
+    return false;
+  }
+  const d = failure.data;
+  if (!d || typeof d !== 'object') {
+    return false;
+  }
+  const o = d as Record<string, unknown>;
+  const stdout = String(o.stdout ?? '').trim();
+  const stderr = String(o.stderr ?? '').trim();
+  return stdout.length > 0 || stderr.length > 0;
+}
+
 function detectRepairIntent(
   failure: RepairFailure,
   fixSteps: WorkerLlmStep[],
@@ -1015,11 +1103,14 @@ function detectRepairIntent(
     if (isValidationCommand(failedCommand)) {
       return 'validation_fix';
     }
-    if (
-      isProjectBuildOrTypecheckCommandFailure(failure) &&
-      looksLikeCompileOrTypeError(getRunCommandFailureText(failure))
-    ) {
-      return 'compile_config_fix';
+    if (isProjectBuildOrTypecheckCommandFailure(failure)) {
+      const text = getRunCommandFailureText(failure);
+      if (
+        looksLikeCompileOrTypeError(text) ||
+        !runCommandFailureHasCapturedOutput(failure)
+      ) {
+        return 'compile_config_fix';
+      }
     }
   }
   if (repairPlanTouchesBusinessFiles(fixSteps)) {
@@ -1436,6 +1527,19 @@ export class WorkerExecutorService implements IWorkerExecutor {
     }
 
     const { taskDescription, goal } = extractTaskContext(task);
+    const scopeHints = extractWorkerScopeHints(task);
+    const executionLogs = await this.taskRedis.getExecutionLogs(task.id);
+    const lastExecutionLog =
+      executionLogs.length > 0
+        ? executionLogs[executionLogs.length - 1]!
+        : null;
+    const minimalScopeHint = shouldInjectMinimalWorkerScope({
+      taskDescription,
+      goal,
+      parametersWorkerMinimalScope: scopeHints.workerMinimalScope,
+      parametersExecutionScope: scopeHints.executionScope,
+      lastExecutionLog,
+    });
     const parentTaskContext = await this.maybeLoadParentTaskContext(
       task,
       taskDescription,
@@ -1487,6 +1591,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       projectRoot,
       fileTreeDeep: deepFileTree,
       importantFiles,
+      ...(minimalScopeHint ? { minimalScopeHint: true } : {}),
       ...(parentTaskContext ? { parentTaskContext } : {}),
     });
     let raw: string;
@@ -1782,7 +1887,7 @@ export class WorkerExecutorService implements IWorkerExecutor {
       await this.taskRedis.appendExecutionLog(taskId, {
         step: 'step_fail',
         time: new Date().toISOString(),
-        meta: { index, tool: toolResult.tool, error: toolResult.error },
+        meta: buildStepFailRedisMeta(index, toolResult),
       });
       stepResults.push({
         index,
@@ -1795,7 +1900,10 @@ export class WorkerExecutorService implements IWorkerExecutor {
         await this.taskRedis.appendExecutionLog(taskId, {
           step: 'step_timeout',
           time: new Date().toISOString(),
-          meta: { index, tool: toolResult.tool, project_root: projectRoot },
+          meta: {
+            ...buildStepFailRedisMeta(index, toolResult),
+            project_root: projectRoot,
+          },
         });
       }
       return {

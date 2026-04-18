@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   assessRepairPolicyForTest,
+  buildStepFailRedisMeta,
   coerceWriteFileStepsForExistingTargets,
   dedupeConsecutiveIdenticalRunCommands,
   findMissingPackageScriptForVerification,
@@ -14,6 +15,41 @@ import {
   shouldInjectParentTaskContextForTest,
   shouldSkipReplayingFailedStepAfterRepairForTest,
 } from './worker.executor.service';
+
+describe('buildStepFailRedisMeta', () => {
+  it('includes runCommand stdout stderr and command for Redis logs', () => {
+    const meta = buildStepFailRedisMeta(3, {
+      success: false,
+      tool: 'runCommand',
+      error: 'Command failed: pnpm run build\n',
+      data: {
+        command: 'pnpm run build',
+        cwd: '/tmp/proj',
+        stdout: 'vite v5\n',
+        stderr: 'error TS2304: x\n',
+      },
+    });
+    expect(meta.index).toBe(3);
+    expect(meta.tool).toBe('runCommand');
+    expect(meta.error).toContain('pnpm run build');
+    expect(meta.command).toBe('pnpm run build');
+    expect(meta.cwd).toBe('/tmp/proj');
+    expect(meta.stdout).toBe('vite v5\n');
+    expect(meta.stderr).toBe('error TS2304: x\n');
+  });
+
+  it('truncates very long stderr', () => {
+    const long = 'e'.repeat(20_000);
+    const meta = buildStepFailRedisMeta(0, {
+      success: false,
+      tool: 'runCommand',
+      error: 'fail',
+      data: { stderr: long },
+    });
+    expect(String(meta.stderr).length).toBeLessThan(long.length);
+    expect(String(meta.stderr)).toContain('…(truncated)');
+  });
+});
 
 describe('sanitizeRepairStepsByPolicy', () => {
   it('rejects repeated writes to the same file', () => {
@@ -61,6 +97,33 @@ describe('sanitizeRepairStepsByPolicy', () => {
           args: {
             path: 'tsconfig.app.json',
             content: '{"compilerOptions":{}}',
+            overwriteExisting: true,
+          },
+        },
+      ],
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('allows protected tsconfig when pnpm run build failed but stdout/stderr were not captured', () => {
+    const result = sanitizeRepairStepsByPolicy(
+      {
+        stepIndex: 0,
+        step: { action: 'runCommand', args: { command: 'pnpm run build' } },
+        tool: 'runCommand',
+        error: 'Command failed: pnpm run build\n',
+        data: { command: 'pnpm run build', cwd: '/tmp/x' },
+      },
+      [
+        {
+          action: 'readFile',
+          args: { path: 'tsconfig.json' },
+        },
+        {
+          action: 'writeFile',
+          args: {
+            path: 'tsconfig.json',
+            content: '{"compilerOptions":{"strict":true}}',
             overwriteExisting: true,
           },
         },

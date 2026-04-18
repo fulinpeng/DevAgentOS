@@ -149,6 +149,16 @@ function assertAllowedCommand(command: string): void {
       `Command not allowed (must start with one of: ${ALLOWED_COMMAND_PREFIXES.join(', ')})`,
     );
   }
+  /** 禁止用 node -e 经 pnpm exec 拼补丁改文件：白名单不含裸 node；且 cmd.exe 下引号/反斜杠极易把脚本写坏（日志里已出现）。 */
+  if (
+    /^pnpm\s+exec\s+node\s+(-e|--eval)\b/i.test(c) ||
+    /^npm\s+exec\s+node\s+(-e|--eval)\b/i.test(c) ||
+    /^yarn\s+exec\s+node\s+(-e|--eval)\b/i.test(c)
+  ) {
+    throw new Error(
+      'run_command_no_inline_node_eval: 禁止用 pnpm/npm exec node -e 内联脚本修改仓库文件。请改用 readFile 读取后用 writeFile 写回；验证请用 pnpm run build、pnpm exec tsc、pnpm run test 等。',
+    );
+  }
 }
 
 @Injectable()

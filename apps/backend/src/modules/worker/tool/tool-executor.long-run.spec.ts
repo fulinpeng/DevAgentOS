@@ -52,3 +52,18 @@ describe('ToolExecutor writeFile overwrite guard', () => {
     expect(r.data?.overwrittenExisting).toBe(true);
   });
 });
+
+describe('ToolExecutor runCommand guardrails', () => {
+  it('rejects pnpm exec node -e inline scripts', async () => {
+    const baseDir = mkdtempSync(path.join(tmpdir(), 'worker-tool-rc-'));
+    const exec = new ToolExecutor();
+    const r = await exec.execute(
+      'runCommand',
+      { command: 'pnpm exec node -e "console.log(1)"' },
+      baseDir,
+    );
+    expect(r.success).toBe(false);
+    expect(String(r.error)).toContain('run_command_no_inline_node_eval');
+  });
+
+});

@@ -32,8 +32,8 @@ export const REPAIR_TRIAGE_SYSTEM_PROMPT = `你是「自动修复技能路由」
 - unsafe-full-overwrite: writeFile 且 unsafe_full_overwrite
 - missing-script: pnpm/npm「缺少脚本」但**不是** test/verify/check/e2e 类验证脚本（如缺 dev 脚本）
 - missing-validation-script: 缺少 test/verify/check/e2e/vitest 等**验证类**脚本
-- config-error: tsconfig/vite.config/webpack 配置、failed to load config、unknown compiler option 等
-- vitest-rtl-assertion: Vitest 已跑起来但 **Testing Library / 断言 / 找不到 DOM 元素 / Found multiple elements** 等运行时测试失败（非 TS 编译行）；输出里出现 **Failed Tests**、**FAIL src/…App.test.tsx** 这类用例失败且**没有** error TS 行时，必须选本项，**禁止**选 typescript-build
+- config-error: tsconfig/vite.config/vitest 配置、failed to load config、unknown compiler option；以及 **ReferenceError: describe is not defined / it is not defined**（Vitest 全局未开或未 import）等**测试运行环境**问题
+- vitest-rtl-assertion: Vitest **已能加载并执行测试文件**后，**Testing Library / 断言 / 找不到 DOM 元素 / Found multiple elements** 等**用例运行时**失败（非 TS 编译行）；输出里出现 **Failed Tests**、**FAIL src/…test.tsx**、**TestingLibraryElementError** 且**没有** error TS 行时，必须选本项，**禁止**选 typescript-build。**注意**：仅有 describe is not defined 且尚未进入 Failed Tests 时，优先 config-error
 - typescript-build: **TSxxxx**、Vite 编译/构建、tsc、import-analysis 构建期解析失败、jest-dom/Chai matcher 未注册等偏「编译/类型/打包」输出
 - run-command-basic: 缺 npm 包、cannot find module、command not found、明显应先 pnpm install
 - llm-fallback: 无法归入以上任一，或信息过少

@@ -173,6 +173,14 @@ export class CoordinatorService {
         step: 'coordinator_parent_completed',
         time: new Date().toISOString(),
       });
+      /**
+       * 子任务在「单步 executeTask」里完成时只会触发 runForParent(直接父 id)，不会自动再跑祖父链。
+       * 若父节点是中间层（非根），此处把父标为 COMPLETED 后必须继续 runForParent(祖父)，
+       * 否则根任务会永远停在 PLAN_APPROVED/PENDING 等，尽管所有子孙已在库中为 COMPLETED。
+       */
+      if (updatedParent.parentId) {
+        await this.runForParent(updatedParent.parentId);
+      }
       return { parent: updatedParent, executedTaskIds };
     }
 

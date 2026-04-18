@@ -21,6 +21,10 @@ import {
 import { resolveRiskLevelForDisplay } from '../role/domain/risk-policy';
 import { assertCanAppendChildTask } from './domain/task-append-gate';
 import type { UpdateTaskStatusDto } from './dto/update-task-status.dto';
+import {
+  isSubtreeCompleted,
+  type TaskTreeNodeSnapshot,
+} from '../coordinator/domain/scheduling';
 
 function jsonToResultRecord(value: unknown): Record<string, unknown> {
   if (
@@ -98,6 +102,28 @@ export class TaskQueryService {
     @Inject(forwardRef(() => CoordinatorService))
     private readonly coordinatorService: CoordinatorService,
   ) {}
+
+  /** 根及其子树全部 Task 行（含根，BFS），与 CoordinatorRepository.findSubtree 结构一致 */
+  private async findSubtreeTasks(rootId: string): Promise<Task[]> {
+    const root = await this.prisma.task.findUnique({ where: { id: rootId } });
+    if (!root) {
+      return [];
+    }
+    const out: Task[] = [root];
+    let frontier: string[] = [rootId];
+    while (frontier.length > 0) {
+      const children = await this.prisma.task.findMany({
+        where: { parentId: { in: frontier } },
+        orderBy: [{ parentId: 'asc' }, { sortOrder: 'asc' }],
+      });
+      if (children.length === 0) {
+        break;
+      }
+      out.push(...children);
+      frontier = children.map((c) => c.id);
+    }
+    return out;
+  }
 
   /** 根及其所有后代任务 id（BFS，含根） */
   private async collectSubtreeTaskIds(rootId: string): Promise<string[]> {
@@ -454,8 +480,9 @@ export class TaskQueryService {
   }
 
   /**
-   * 人工将 RUNNING 标为 WORKER_PAUSED（例如前端仍显示 RUNNING 但实际已卡住），
-   * 可选合并 result；续跑仍走 POST /role/execute。
+   * 人工 PATCH /task/:id/status
+   * - WORKER_PAUSED：RUNNING → 可续跑暂停（可选合并 result）；续跑走 POST /role/execute
+   * - COMPLETED：仅当 isSubtreeCompleted（子树后代全为 COMPLETED）时把本节点标为完成，并尝试触发上级协调
    */
   async updateTaskManualStatus(
     taskId: string,
@@ -465,34 +492,79 @@ export class TaskQueryService {
     if (!task) {
       throw new NotFoundException(`Task ${taskId} not found`);
     }
-    if (dto.status !== 'WORKER_PAUSED') {
-      throw new BadRequestException('仅支持 status=WORKER_PAUSED');
+
+    if (dto.status === 'WORKER_PAUSED') {
+      if (task.status !== TaskStatus.RUNNING) {
+        throw new ConflictException(
+          `仅 RUNNING 可手动置为 WORKER_PAUSED（当前=${task.status}）`,
+        );
+      }
+      await this.prisma.task.update({
+        where: { id: taskId },
+        data: {
+          status: TASK_STATUS_WORKER_PAUSED,
+          ...(dto.result !== undefined
+            ? {
+                result: {
+                  ...jsonToResultRecord(task.result),
+                  ...dto.result,
+                } as Prisma.InputJsonValue,
+              }
+            : {}),
+        },
+      });
+      await this.taskRedis.setTaskStatus(taskId, 'worker_paused');
+      await this.taskRedis.appendExecutionLog(taskId, {
+        step: 'task_manual_worker_paused',
+        time: new Date().toISOString(),
+        meta: { source: 'PATCH /task/:id/status' },
+      });
+      return this.getTaskDetail(taskId);
     }
-    if (task.status !== TaskStatus.RUNNING) {
-      throw new ConflictException(
-        `仅 RUNNING 可手动置为 WORKER_PAUSED（当前=${task.status}）`,
-      );
+
+    if (dto.status === 'COMPLETED') {
+      if (task.status === TaskStatus.COMPLETED) {
+        return this.getTaskDetail(taskId);
+      }
+      const subtree = await this.findSubtreeTasks(taskId);
+      if (subtree.length === 0) {
+        throw new NotFoundException(`Task ${taskId} not found`);
+      }
+      const snaps: TaskTreeNodeSnapshot[] = subtree.map((n) => ({
+        id: n.id,
+        parentId: n.parentId,
+        status: n.status as TaskTreeNodeSnapshot['status'],
+        sortOrder: n.sortOrder,
+      }));
+      if (!isSubtreeCompleted(taskId, snaps)) {
+        throw new ConflictException(
+          '无法人工置为 COMPLETED：子树内仍有非 COMPLETED 的后代，或叶任务尚未完成。请先处理失败/未执行的子任务，或使用 POST /coordinator/run/:id 推进协调。',
+        );
+      }
+      await this.prisma.task.update({
+        where: { id: taskId },
+        data: { status: TaskStatus.COMPLETED },
+      });
+      await this.taskRedis.setTaskStatus(taskId, 'completed');
+      await this.taskRedis.appendExecutionLog(taskId, {
+        step: 'task_manual_completed',
+        time: new Date().toISOString(),
+        meta: { source: 'PATCH /task/:id/status' },
+      });
+      if (task.parentId) {
+        try {
+          await this.coordinatorService.runForParent(task.parentId);
+        } catch (e) {
+          this.logger.warn(
+            `manual COMPLETED 后触发上级协调失败 taskId=${taskId} parentId=${task.parentId}: ${
+              e instanceof Error ? e.message : e
+            }`,
+          );
+        }
+      }
+      return this.getTaskDetail(taskId);
     }
-    await this.prisma.task.update({
-      where: { id: taskId },
-      data: {
-        status: TASK_STATUS_WORKER_PAUSED,
-        ...(dto.result !== undefined
-          ? {
-              result: {
-                ...jsonToResultRecord(task.result),
-                ...dto.result,
-              } as Prisma.InputJsonValue,
-            }
-          : {}),
-      },
-    });
-    await this.taskRedis.setTaskStatus(taskId, 'worker_paused');
-    await this.taskRedis.appendExecutionLog(taskId, {
-      step: 'task_manual_worker_paused',
-      time: new Date().toISOString(),
-      meta: { source: 'PATCH /task/:id/status' },
-    });
-    return this.getTaskDetail(taskId);
+
+    throw new BadRequestException(`不支持的 status: ${String(dto.status)}`);
   }
 }
