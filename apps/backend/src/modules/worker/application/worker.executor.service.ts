@@ -31,6 +31,7 @@ import {
 } from '../repair/run-command-failure-text';
 import {
   buildRepairSnapshot,
+  type FixPlan,
   type RepairContext,
   type RepairFailure,
   type RepairWorkflowOutline,
@@ -170,8 +171,7 @@ function llmErrorMetaForRedis(e: unknown): Record<string, unknown> {
 }
 
 /**
- * 解析 LLM 输出：优先 `steps[]`，否则兼容单条 `{ action, args }`。
- * Worker 请求侧已启用 `response_format: json_object`，单次补全应为唯一顶层对象，避免两段 JSON 拼接。
+ * 从 offset 起扫描，切出第一个平衡花括号的顶层 JSON 子串（用于粘连多段 `{}{}`）。
  */
 function extractFirstTopLevelJsonObject(raw: string): string | null {
   const start = raw.indexOf('{');
@@ -210,6 +210,30 @@ function extractFirstTopLevelJsonObject(raw: string): string | null {
     }
   }
   return null;
+}
+
+/** 顺序切出 raw 中所有顶层 `{ ... }` 片段（模型偶发输出两段 JSON 时，后续段不再丢弃）。 */
+function extractAllTopLevelJsonObjects(raw: string): string[] {
+  const parts: string[] = [];
+  let pos = 0;
+  while (pos < raw.length) {
+    while (pos < raw.length && /\s/.test(raw[pos] as string)) {
+      pos += 1;
+    }
+    if (pos >= raw.length) {
+      break;
+    }
+    if (raw[pos] !== '{') {
+      break;
+    }
+    const chunk = extractFirstTopLevelJsonObject(raw.slice(pos));
+    if (!chunk) {
+      break;
+    }
+    parts.push(chunk);
+    pos += chunk.length;
+  }
+  return parts;
 }
 
 function parseWorkerLlmOutput(text: string): WorkerLlmStep[] | null {
@@ -261,19 +285,27 @@ function parseWorkerLlmOutput(text: string): WorkerLlmStep[] | null {
     return null;
   };
   try {
-    const first = parseOne(raw);
-    if (first) {
-      return first;
+    const single = parseOne(raw);
+    if (single) {
+      return single;
     }
   } catch {
-    // ignore and fallback
+    // 整段非法 JSON（常见：两段 {"steps":...}{"steps":...} 粘连）→ 走多段合并
   }
   try {
-    const firstObject = extractFirstTopLevelJsonObject(raw);
-    if (!firstObject) {
+    const chunks = extractAllTopLevelJsonObjects(raw);
+    if (chunks.length === 0) {
       return null;
     }
-    return parseOne(firstObject);
+    const merged: WorkerLlmStep[] = [];
+    for (const chunk of chunks) {
+      const steps = parseOne(chunk);
+      if (!steps || steps.length === 0) {
+        return null;
+      }
+      merged.push(...steps);
+    }
+    return merged.length > 0 ? merged : null;
   } catch {
     return null;
   }
@@ -2054,208 +2086,237 @@ export class WorkerExecutorService implements IWorkerExecutor {
         };
       }
 
-      attempt += 1;
       const workflowOutline = await this.fetchWorkflowOutlineForRepair(task.id);
-      const context: RepairContext = {
-        taskId: task.id,
-        projectRoot,
-        workflowTechStack,
-        taskTechStack,
-        attempt,
-        maxAttempts,
-        remainingSteps: effectiveRun.remainingSteps,
-        failure: effectiveRun.failure,
-        history,
-        narrative,
-        ...(workflowOutline ? { workflowOutline } : {}),
-        executedStepsPreview: allResults.map((r) => ({
-          index: r.index,
-          action: r.action,
-          success: r.success,
-          ...(r.error ? { error: r.error } : {}),
-        })),
-      };
-      const plan = await this.repairEngine.planFixSteps(context);
-      if (!plan || plan.fixSteps.length === 0) {
-        return {
-          success: false,
-          result: {
-            mode: 'steps',
-            failedAtIndex: effectiveRun.failure.stepIndex,
-            steps: allResults,
-            error: effectiveRun.failure.error,
-            lastTool: effectiveRun.failure.tool,
-            repair: buildRepairSnapshot({
-              state: 'exhausted',
-              attempt,
-              maxAttempts,
-              lastFailure: effectiveRun.failure,
-              remainingSteps: effectiveRun.remainingSteps,
-              history,
-            }),
-          },
-        };
-      }
-      const sanitized = sanitizeRepairStepsByPolicy(
-        effectiveRun.failure,
-        plan.fixSteps,
-      );
-      if (!sanitized.ok) {
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'repair_plan_rejected',
-          time: new Date().toISOString(),
-          meta: {
-            attempt,
-            reason: sanitized.reason,
-            skillId: plan.skillId,
-            category: plan.category,
-          },
-        });
-        return {
-          success: false,
-          result: {
-            mode: 'steps',
-            failedAtIndex: effectiveRun.failure.stepIndex,
-            steps: allResults,
-            error: `repair_plan_rejected: ${sanitized.reason}`,
-            lastTool: effectiveRun.failure.tool,
-            repair: buildRepairSnapshot({
-              state: 'exhausted',
-              attempt,
-              maxAttempts,
-              lastFailure: effectiveRun.failure,
-              remainingSteps: effectiveRun.remainingSteps,
-              history,
-              selectedSkill: {
-                skillId: plan.skillId,
-                score: plan.score,
-                category: plan.category,
-                reason: plan.reason,
-              },
-            }),
-          },
-        };
-      }
-      plan.fixSteps = sanitized.steps;
-      const repairPlanFp = fingerprintRepairPlan(
-        effectiveRun.failure,
-        plan.fixSteps,
-      );
-      const repairWriteIntentFp = fingerprintRepairWriteIntents(
-        effectiveRun.failure,
-        plan.fixSteps,
-      );
-      if (seenRepairPlanFingerprints.has(repairPlanFp)) {
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'repair_plan_dedup_hit',
-          time: new Date().toISOString(),
-          meta: {
-            attempt,
-            skillId: plan.skillId,
-            category: plan.category,
-          },
-        });
-        return {
-          success: false,
-          result: {
-            mode: 'steps',
-            failedAtIndex: effectiveRun.failure.stepIndex,
-            steps: allResults,
-            error: 'repair_plan_dedup_hit',
-            lastTool: effectiveRun.failure.tool,
-            repair: buildRepairSnapshot({
-              state: 'exhausted',
-              attempt,
-              maxAttempts,
-              lastFailure: effectiveRun.failure,
-              remainingSteps: effectiveRun.remainingSteps,
-              history,
-              selectedSkill: {
-                skillId: plan.skillId,
-                score: plan.score,
-                category: plan.category,
-                reason: 'duplicate repair plan detected',
-              },
-            }),
-          },
-        };
-      }
-      seenRepairPlanFingerprints.add(repairPlanFp);
-      if (
-        repairWriteIntentFp &&
-        seenRepairWriteIntentFingerprints.has(repairWriteIntentFp)
-      ) {
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'repair_write_intent_dedup_hit',
-          time: new Date().toISOString(),
-          meta: {
-            attempt,
-            skillId: plan.skillId,
-            category: plan.category,
-          },
-        });
-        return {
-          success: false,
-          result: {
-            mode: 'steps',
-            failedAtIndex: effectiveRun.failure.stepIndex,
-            steps: allResults,
-            error: 'repair_write_intent_dedup_hit',
-            lastTool: effectiveRun.failure.tool,
-            repair: buildRepairSnapshot({
-              state: 'exhausted',
-              attempt,
-              maxAttempts,
-              lastFailure: effectiveRun.failure,
-              remainingSteps: effectiveRun.remainingSteps,
-              history,
-              selectedSkill: {
-                skillId: plan.skillId,
-                score: plan.score,
-                category: plan.category,
-                reason: 'duplicate repair write intent detected',
-              },
-            }),
-          },
-        };
-      }
-      if (repairWriteIntentFp) {
-        seenRepairWriteIntentFingerprints.add(repairWriteIntentFp);
-      }
+      let plan: FixPlan | null = null;
 
-      const failedCommand = String(effectiveRun.failure.step.args.command ?? '').trim();
-      if (
-        effectiveRun.failure.tool === 'runCommand' &&
-        isValidationCommand(failedCommand) &&
-        !repairPlanIsMeaningfulForValidationFailure(
-          failedCommand,
+      // 在同一次 runCommand 失败上反复向 Repair 要方案，直到拿到「对测试失败有意义」的方案或耗尽次数；
+      // 避免「仅重跑 pnpm run test」被策略拒绝后又立刻重放同一测试（浪费一步且易被 dedup 卡死）。
+      for (;;) {
+        if (attempt >= maxAttempts) {
+          return {
+            success: false,
+            result: {
+              mode: 'steps',
+              failedAtIndex: effectiveRun.failure.stepIndex,
+              steps: allResults,
+              error: effectiveRun.failure.error,
+              lastTool: effectiveRun.failure.tool,
+              repair: buildRepairSnapshot({
+                state: 'exhausted',
+                attempt,
+                maxAttempts,
+                lastFailure: effectiveRun.failure,
+                remainingSteps: effectiveRun.remainingSteps,
+                history,
+              }),
+            },
+          };
+        }
+
+        attempt += 1;
+        const context: RepairContext = {
+          taskId: task.id,
+          projectRoot,
+          workflowTechStack,
+          taskTechStack,
+          attempt,
+          maxAttempts,
+          remainingSteps: effectiveRun.remainingSteps,
+          failure: effectiveRun.failure,
+          history,
+          narrative,
+          ...(workflowOutline ? { workflowOutline } : {}),
+          executedStepsPreview: allResults.map((r) => ({
+            index: r.index,
+            action: r.action,
+            success: r.success,
+            ...(r.error ? { error: r.error } : {}),
+          })),
+        };
+        plan = await this.repairEngine.planFixSteps(context);
+        if (!plan || plan.fixSteps.length === 0) {
+          return {
+            success: false,
+            result: {
+              mode: 'steps',
+              failedAtIndex: effectiveRun.failure.stepIndex,
+              steps: allResults,
+              error: effectiveRun.failure.error,
+              lastTool: effectiveRun.failure.tool,
+              repair: buildRepairSnapshot({
+                state: 'exhausted',
+                attempt,
+                maxAttempts,
+                lastFailure: effectiveRun.failure,
+                remainingSteps: effectiveRun.remainingSteps,
+                history,
+              }),
+            },
+          };
+        }
+        const sanitized = sanitizeRepairStepsByPolicy(
           effectiveRun.failure,
           plan.fixSteps,
-        )
-      ) {
-        await this.taskRedis.appendExecutionLog(task.id, {
-          step: 'repair_plan_rejected_no_business_change',
-          time: new Date().toISOString(),
-          meta: {
+        );
+        if (!sanitized.ok) {
+          await this.taskRedis.appendExecutionLog(task.id, {
+            step: 'repair_plan_rejected',
+            time: new Date().toISOString(),
+            meta: {
+              attempt,
+              reason: sanitized.reason,
+              skillId: plan.skillId,
+              category: plan.category,
+            },
+          });
+          return {
+            success: false,
+            result: {
+              mode: 'steps',
+              failedAtIndex: effectiveRun.failure.stepIndex,
+              steps: allResults,
+              error: `repair_plan_rejected: ${sanitized.reason}`,
+              lastTool: effectiveRun.failure.tool,
+              repair: buildRepairSnapshot({
+                state: 'exhausted',
+                attempt,
+                maxAttempts,
+                lastFailure: effectiveRun.failure,
+                remainingSteps: effectiveRun.remainingSteps,
+                history,
+                selectedSkill: {
+                  skillId: plan.skillId,
+                  score: plan.score,
+                  category: plan.category,
+                  reason: plan.reason,
+                },
+              }),
+            },
+          };
+        }
+        plan.fixSteps = sanitized.steps;
+        const repairPlanFp = fingerprintRepairPlan(
+          effectiveRun.failure,
+          plan.fixSteps,
+        );
+        const repairWriteIntentFp = fingerprintRepairWriteIntents(
+          effectiveRun.failure,
+          plan.fixSteps,
+        );
+        if (seenRepairPlanFingerprints.has(repairPlanFp)) {
+          await this.taskRedis.appendExecutionLog(task.id, {
+            step: 'repair_plan_dedup_hit',
+            time: new Date().toISOString(),
+            meta: {
+              attempt,
+              skillId: plan.skillId,
+              category: plan.category,
+            },
+          });
+          return {
+            success: false,
+            result: {
+              mode: 'steps',
+              failedAtIndex: effectiveRun.failure.stepIndex,
+              steps: allResults,
+              error: 'repair_plan_dedup_hit',
+              lastTool: effectiveRun.failure.tool,
+              repair: buildRepairSnapshot({
+                state: 'exhausted',
+                attempt,
+                maxAttempts,
+                lastFailure: effectiveRun.failure,
+                remainingSteps: effectiveRun.remainingSteps,
+                history,
+                selectedSkill: {
+                  skillId: plan.skillId,
+                  score: plan.score,
+                  category: plan.category,
+                  reason: 'duplicate repair plan detected',
+                },
+              }),
+            },
+          };
+        }
+        if (
+          repairWriteIntentFp &&
+          seenRepairWriteIntentFingerprints.has(repairWriteIntentFp)
+        ) {
+          await this.taskRedis.appendExecutionLog(task.id, {
+            step: 'repair_write_intent_dedup_hit',
+            time: new Date().toISOString(),
+            meta: {
+              attempt,
+              skillId: plan.skillId,
+              category: plan.category,
+            },
+          });
+          return {
+            success: false,
+            result: {
+              mode: 'steps',
+              failedAtIndex: effectiveRun.failure.stepIndex,
+              steps: allResults,
+              error: 'repair_write_intent_dedup_hit',
+              lastTool: effectiveRun.failure.tool,
+              repair: buildRepairSnapshot({
+                state: 'exhausted',
+                attempt,
+                maxAttempts,
+                lastFailure: effectiveRun.failure,
+                remainingSteps: effectiveRun.remainingSteps,
+                history,
+                selectedSkill: {
+                  skillId: plan.skillId,
+                  score: plan.score,
+                  category: plan.category,
+                  reason: 'duplicate repair write intent detected',
+                },
+              }),
+            },
+          };
+        }
+
+        const failedCommand = String(
+          effectiveRun.failure.step.args.command ?? '',
+        ).trim();
+        if (
+          effectiveRun.failure.tool === 'runCommand' &&
+          isValidationCommand(failedCommand) &&
+          !repairPlanIsMeaningfulForValidationFailure(
+            failedCommand,
+            effectiveRun.failure,
+            plan.fixSteps,
+          )
+        ) {
+          await this.taskRedis.appendExecutionLog(task.id, {
+            step: 'repair_plan_rejected_no_business_change',
+            time: new Date().toISOString(),
+            meta: {
+              attempt,
+              skillId: plan.skillId,
+              category: plan.category,
+              failedCommand,
+              hint:
+                '测试命令失败后，修复方案未通过 writeFile 修改 src/ 下业务源码、测试或测试相关配置；请根据报错堆栈补齐实质改动后再重跑测试。',
+            },
+          });
+          history.push({
             attempt,
             skillId: plan.skillId,
             category: plan.category,
-            failedCommand,
-            hint:
-              '测试命令失败后，修复方案未通过 writeFile 修改 src/ 下业务源码、测试或测试相关配置；请根据报错堆栈补齐实质改动后再重跑测试。',
-          },
-        });
-        history.push({
-          attempt,
-          skillId: plan.skillId,
-          category: plan.category,
-          success: false,
-          reason:
-            'validation command failed but repair plan does not touch business files',
-        });
-        // 跳过本次“无业务改动”的修复方案，继续下一轮自动修复，不直接失败。
-        currentSteps = effectiveRun.remainingSteps;
-        continue;
+            success: false,
+            reason:
+              'validation command failed but repair plan does not touch business files',
+          });
+          continue;
+        }
+
+        seenRepairPlanFingerprints.add(repairPlanFp);
+        if (repairWriteIntentFp) {
+          seenRepairWriteIntentFingerprints.add(repairWriteIntentFp);
+        }
+        break;
       }
 
       await this.taskRedis.appendExecutionLog(task.id, {

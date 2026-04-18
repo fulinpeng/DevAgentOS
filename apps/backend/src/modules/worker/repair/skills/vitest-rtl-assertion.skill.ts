@@ -12,11 +12,11 @@ const TEST_ASSERTION_REPAIR_HINT = `
 # 本轮为「Vitest 测试运行时失败」（常含 Testing Library；非 tsc 编译）
 失败信息里常见：TestingLibraryElementError、找不到文案/角色、Found multiple、expect 失败等。
 
-**策略（与系统消息一致）：默认弱化 UI/DOM 测试，优先交互逻辑。**
+**策略（与系统消息一致）：前端只需要 JS/TS 逻辑单测，不要交互式 UI 测试。**
 
-1) readFile 堆栈中的测试与相关 **src/**（hook、storage、组件）。对照 taskDescription / workflowGoal：**能不改 DOM 就不改**。
-2) **首选（除非任务明确要求保留界面用例）**：把失败用例 **改写为交互逻辑测试**——例如对自定义 hook 使用 \`renderHook\` + mock \`localStorage\`；把「添加批注 / 选任务」等流程拆成 **纯函数或模块级单测**；**删除或大幅收缩** \`screen.getBy*\` / \`userEvent\` 驱动的整页测试。组件可保持薄，逻辑下沉到可测单元。
-3) **次选**（任务明确要求 UI 验收或改写成本过高）：再做 **最小 RTL 修补**——读源码核对 role/label/placeholder/storage 形状与 key；**禁止** 为绿测试大改组件无障碍语义（如 aside 改 dialog）。
+1) readFile 堆栈中的测试与相关 **src/**（hook、storage、纯逻辑模块）。对照 taskDescription / workflowGoal：**不要**为绿测试去补 \`userEvent\` / 整页 \`render\` + \`screen\` 类交互流程。
+2) **默认做法**：把失败用例 **改写或替换为逻辑层单测**——\`renderHook\` + mock \`localStorage\`、纯函数、从组件抽出的 handler/ reducer、模块级断言；**删除** \`userEvent\`、\`fireEvent\`、整页 DOM 查询式用例。组件保持薄，逻辑下沉到可测单元。
+3) **例外**：仅当任务描述 **明文要求** 界面/无障碍回归时，才允许 **最小** RTL 对齐（role/label/placeholder/storage 与源码一致）；**禁止** 为大改无障碍语义（如 aside 改 dialog）而迁就错误测试。
 4) **describe is not defined**：vitest \`test.globals: true\` 或测试文件 \`import { describe, it, expect, beforeEach } from 'vitest'\`；\`setupFiles\` 建议数组形式。
 5) 禁止 pnpm install 敷衍（非缺包不 install）；path 无 ..；禁止 pnpm run dev；最后一步应再跑 \`pnpm run test\`（或项目等价脚本）。
 
@@ -82,7 +82,7 @@ export class VitestRtlAssertionRepairSkill implements RepairSkill {
       category: 'test_assertion',
       reason:
         context.triage?.rationale ||
-        'vitest/testing-library assertion or DOM query failure',
+        'vitest failure: prefer JS logic tests, no interaction/UI tests unless task requires UI',
       fixSteps,
     };
   }

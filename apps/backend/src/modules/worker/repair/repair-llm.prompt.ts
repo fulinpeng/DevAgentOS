@@ -1,13 +1,13 @@
 import type { RepairContext } from './repair.types';
 
-/** 所有 Repair 技能共用的「需求—测试—实现」顺序；默认弱化 UI/DOM 测试，偏向交互逻辑 */
+/** 所有 Repair 技能共用的「需求—测试—实现」顺序；前端以 JS/TS 逻辑单测为主，禁止交互式 UI 测试（除非任务明文要求 UI 回归） */
 export const REPAIR_REQUIREMENTS_TEST_UI_ORDER = `
 # 决策顺序（必须遵守：需求 → 测试 → 实现）
 
 1) **需求是最高依据**：以当前任务的 taskDescription、workflowGoal、workflow outline 与用户意图为准。
 2) **先判断测试是否在表达需求**：若失败来自断言/期望与**需求**矛盾，应 **修改测试**；禁止为了绿灯把业务改成迎合**错误**的测试。
-3) **再判断实现是否满足已校对的测试**：在确认测试与需求一致后仍失败，应 **修改业务代码 / 状态与持久化 / 交互逻辑**，使实现通过测试。
-4) **测试风格（默认）**：**不强制** RTL/界面级测试。若失败来自 **TestingLibraryElementError / getByRole / screen**，且任务**未明确要求**保留 UI 用例：**优先**将验证改为 **交互逻辑测试**（\`renderHook\`、纯函数、storage 封装、从组件抽出的 handler），**删减或替换**脆弱 DOM 断言，而不是在 JSX 与查询之间来回打补丁。
+3) **再判断实现是否满足已校对的测试**：在确认测试与需求一致后仍失败，应 **修改业务代码 / 状态与持久化 / 业务逻辑**，使实现通过测试。
+4) **测试风格（默认，前端）**：**只做 JS/TS 逻辑层单测**（纯函数、\`renderHook\`、工具模块、storage/数据流封装）；**禁止**新增或保留 **交互式 UI 测试**（\`userEvent\`、\`fireEvent\`、整页 \`render\` + \`screen.getBy*\`/getByRole 等）。若失败来自 TestingLibrary/DOM 断言且任务**未明文要求**界面回归：**删除或改写**为逻辑单测，**不要**在 RTL 层做「最小修补」凑绿。
 5) **禁止**：未对照任务说明就删断言、空测试敷衍过关；也禁止无依据地大改无障碍语义 solely 为绿 UI 测试。
 `;
 
@@ -27,7 +27,7 @@ ${REPAIR_REQUIREMENTS_TEST_UI_ORDER.trim()}
 9) 对“已存在文件”禁止盲目整文件重写：必须先 readFile，尽量最小改动；确需覆盖时 writeFile 需携带 overwriteExisting=true（否则服务端会报 unsafe_full_overwrite）
 10) 只要修复涉及“行为逻辑”变更（包括但不限于：函数实现、状态更新、事件处理、接口调用、缓存与持久化、副作用、数据流与条件分支），仅 build 通过不算修复完成；fixSteps 必须包含至少一条与改动直接对应、且可自动结束的验证命令，并且应先检查 package.json 中已有 scripts，优先复用 test / verify / check / e2e，禁止臆造不存在的脚本；若项目没有测试体系，则先补最小测试/验证脚本后再执行。优先新增测试文件与测试专用配置（如 vitest.config.ts、tsconfig.test.json），避免重写主 tsconfig.json / vite.config.ts，除非错误已直接指向必须修改；若缺 npm script（如 test），可最小改动补充 package.json 的 scripts 或改用 pnpm exec vitest run 等不依赖别名的命令
 11) React+Vite+Vitest：修改 vitest.config.ts 时须保留 defineConfig 来自 vitest/config 与 @vitejs/plugin-react；禁止改成仅从 vite 引入 defineConfig 且去掉 react 插件的“极简配置”来糊弄 build。build 因测试被纳入 tsc 失败时优先调整 tsconfig exclude/references，勿清空测试文件或拆除 Vitest
-12) **Vitest 运行时失败**（含 TestingLibraryElementError、Failed Tests）：readFile 堆栈中的测试与相关 **src/** 逻辑。**默认优先**把失败用例改为 **交互逻辑测试**（hook/工具函数/mock storage），减少或移除 DOM 查询；仅当任务明确要求界面验收时，才在 RTL 层做最小对齐（role/label/种子与源码一致）`;
+12) **Vitest 运行时失败**（含 TestingLibraryElementError、Failed Tests）：readFile 堆栈中的测试与相关 **src/** 逻辑。**默认**把失败用例改为 **JS/TS 逻辑单测**（hook/纯函数/mock storage），**移除**交互式 UI 测试；仅当任务描述**明文要求**界面/无障碍验收时，才允许在 RTL 层做最小对齐（role/label 与源码一致）`;
 
 const MAX_FIELD = 6000;
 const MAX_OUTLINE_STEPS = 40;

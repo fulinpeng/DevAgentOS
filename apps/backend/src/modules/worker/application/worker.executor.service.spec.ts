@@ -639,13 +639,14 @@ describe('assessRepairPolicyForTest', () => {
 });
 
 describe('parseWorkerLlmOutputForTest', () => {
-  it('parses first object when streamed response concatenates two JSON objects', () => {
+  it('merges steps from all concatenated top-level JSON objects', () => {
     const raw =
       '{"steps":[{"action":"readFile","args":{"path":"package.json"}}]}' +
       '{"steps":[{"action":"runCommand","args":{"command":"pnpm run test"}}]}';
     const parsed = parseWorkerLlmOutputForTest(raw);
     expect(parsed).toEqual([
       { action: 'readFile', args: { path: 'package.json' } },
+      { action: 'runCommand', args: { command: 'pnpm run test' } },
     ]);
   });
 });
